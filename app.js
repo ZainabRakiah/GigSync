@@ -2438,7 +2438,8 @@ let isAiSpeaking = false;
 let turnSilenceTimer = null;
 let currentTurnTranscript = '';
 let currentInterimTranscript = '';
-const TURN_SILENCE_TIMEOUT_MS = 5000; // 5.0 seconds silence window per specification
+// A call should turn around quickly after the caller stops speaking.
+const TURN_SILENCE_TIMEOUT_MS = 2000;
 
 function setVoiceAgentState(stateKey, labelText) {
     const badge = document.getElementById('vaLiveStateBadge');

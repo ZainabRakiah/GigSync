@@ -1,0 +1,1929 @@
+/* ==========================================================================
+   GigSync — Central SQLite Database Layer with Firebase Firestore Sync
+   Dual Persistence: Instant Local SQLite + Real-Time Firebase Cloud Sync
+   ========================================================================== */
+
+let DatabaseSync = null;
+try {
+    DatabaseSync = require('node:sqlite').DatabaseSync;
+} catch (e) {
+    DatabaseSync = null;
+}
+
+const path = require('node:path');
+const fs = require('node:fs');
+const crypto = require('node:crypto');
+
+const FirebaseSync = require('./firebase');
+
+let db = null;
+let useMemoryFallback = false;
+
+if (DatabaseSync) {
+    try {
+        let dbFile = path.join(__dirname, '..', 'gigsync.db');
+        const isServerless = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.NOW_REGION);
+        
+        if (isServerless) {
+            const tmpPath = path.join('/tmp', 'gigsync.db');
+            try {
+                if (fs.existsSync(dbFile) && !fs.existsSync(tmpPath)) {
+                    fs.copyFileSync(dbFile, tmpPath);
+                }
+                dbFile = tmpPath;
+            } catch (_) {}
+        }
+
+        try {
+            db = new DatabaseSync(dbFile);
+            db.exec('PRAGMA foreign_keys = ON;');
+            db.exec('CREATE TABLE IF NOT EXISTS _health_check (id INTEGER PRIMARY KEY);');
+        } catch (writeErr) {
+            // Read-only filesystem detected -> copy to /tmp and retry
+            try {
+                const tmpPath = path.join('/tmp', 'gigsync.db');
+                const srcPath = path.join(__dirname, '..', 'gigsync.db');
+                if (fs.existsSync(srcPath)) {
+                    fs.copyFileSync(srcPath, tmpPath);
+                }
+                db = new DatabaseSync(tmpPath);
+                db.exec('PRAGMA foreign_keys = ON;');
+                db.exec('CREATE TABLE IF NOT EXISTS _health_check (id INTEGER PRIMARY KEY);');
+            } catch (tmpErr) {
+                // If /tmp also fails, use in-memory SQLite database
+                try {
+                    db = new DatabaseSync(':memory:');
+                    db.exec('PRAGMA foreign_keys = ON;');
+                } catch (_) {
+                    db = null;
+                    useMemoryFallback = true;
+                }
+            }
+        }
+    } catch (e) {
+        db = null;
+        useMemoryFallback = true;
+    }
+} else {
+    useMemoryFallback = true;
+}
+
+// In-Memory Fallback Store (Used on Vercel Serverless if native SQLite is unavailable)
+const memoryStore = {
+    users: [
+        {
+            id: 1,
+            name: 'Master Platform Administrator',
+            phone: '9999999999',
+            email: 'shiyazabdulazeez@gmail.com',
+            role: 'admin',
+            password_hash: crypto.scryptSync('admin@gigsync2026', 'gigsync_salt_tier2', 32).toString('hex'),
+            city: 'Ramanagara',
+            area: 'Headquarters'
+        }
+    ],
+    sessions: {},
+    workers: [],
+    customers: [],
+    jobs: [],
+    availability: {},
+    callLogs: []
+};
+
+// Helper for unique Job IDs (e.g. GS-1048)
+function generateJobId() {
+    const rand = Math.floor(1000 + Math.random() * 9000);
+    return `GS-${rand}`;
+}
+
+// Password hashing helper
+function hashPassword(password) {
+    return crypto.scryptSync(password, 'gigsync_salt_tier2', 32).toString('hex');
+}
+
+function verifyPassword(password, hash) {
+    const hashedAttempt = crypto.scryptSync(password, 'gigsync_salt_tier2', 32).toString('hex');
+    return hashedAttempt === hash;
+}
+
+// Initialize Database Tables & Seed the 3 Test Workers
+function initDatabase() {
+    if (!db) return;
+    try {
+        db.exec(`
+        PRAGMA foreign_keys = ON;
+
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            phone TEXT NOT NULL UNIQUE,
+            email TEXT,
+            role TEXT NOT NULL CHECK(role IN ('customer', 'worker', 'admin')),
+            password_hash TEXT NOT NULL,
+            city TEXT NOT NULL DEFAULT 'Ramanagara',
+            area TEXT NOT NULL DEFAULT 'Town',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS sessions (
+            token TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            phone TEXT NOT NULL,
+            role TEXT NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS workers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER UNIQUE,
+            name TEXT NOT NULL,
+            phone TEXT NOT NULL UNIQUE,
+            trade TEXT NOT NULL,
+            service TEXT NOT NULL,
+            skills TEXT DEFAULT '',
+            tools TEXT DEFAULT 'Standard tool kit',
+            rating REAL DEFAULT 5.0,
+            km REAL DEFAULT 1.5,
+            jobs_completed INTEGER DEFAULT 0,
+            experience_years INTEGER DEFAULT 2,
+            price INTEGER DEFAULT 300,
+            is_available INTEGER DEFAULT 1,
+            is_verified INTEGER DEFAULT 1,
+            initials TEXT NOT NULL,
+            city TEXT NOT NULL DEFAULT 'Ramanagara',
+            area TEXT NOT NULL DEFAULT 'Town',
+            service_areas TEXT NOT NULL DEFAULT 'Ramanagara, Nearby Areas',
+            about TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS customers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER UNIQUE,
+            name TEXT NOT NULL,
+            phone TEXT NOT NULL UNIQUE,
+            email TEXT,
+            city TEXT NOT NULL DEFAULT 'Ramanagara',
+            area TEXT NOT NULL DEFAULT 'Town',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS jobs (
+            id TEXT PRIMARY KEY,
+            customer_id INTEGER,
+            customer_phone TEXT NOT NULL,
+            customer_name TEXT NOT NULL,
+            worker_id INTEGER,
+            worker_phone TEXT,
+            worker_name TEXT,
+            service TEXT NOT NULL,
+            problem_description TEXT NOT NULL,
+            location TEXT NOT NULL,
+            city TEXT NOT NULL DEFAULT 'Ramanagara',
+            requested_date TEXT NOT NULL DEFAULT 'Today',
+            requested_time TEXT NOT NULL DEFAULT 'Immediate',
+            budget TEXT NOT NULL,
+            final_price INTEGER,
+            status TEXT DEFAULT 'Requested',
+            payment_status TEXT DEFAULT 'Pending',
+            payment_method TEXT DEFAULT 'Cash',
+            rating INTEGER,
+            review TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            completed_at DATETIME,
+            FOREIGN KEY (worker_id) REFERENCES workers(id) ON DELETE SET NULL,
+            FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE SET NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS worker_availability (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            worker_id INTEGER,
+            worker_phone TEXT NOT NULL,
+            trade TEXT NOT NULL,
+            date_str TEXT NOT NULL,
+            start_time TEXT NOT NULL,
+            end_time TEXT NOT NULL,
+            is_available INTEGER DEFAULT 1,
+            notes TEXT,
+            pattern TEXT NOT NULL DEFAULT 'once',
+            days_of_week TEXT NOT NULL DEFAULT '[]',
+            range_start TEXT,
+            range_end TEXT,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (worker_id) REFERENCES workers(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS call_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            caller_phone TEXT NOT NULL,
+            caller_role TEXT NOT NULL DEFAULT 'customer',
+            transcript TEXT NOT NULL,
+            intent_detected TEXT,
+            actions_taken TEXT,
+            duration_seconds INTEGER DEFAULT 0,
+            status TEXT DEFAULT 'Completed',
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS voice_sessions (
+            session_id TEXT PRIMARY KEY,
+            data TEXT NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+    `);
+
+    // Ensure Master Admin account exists
+    const adminPhone = '9999999999';
+    const adminUser = db.prepare('SELECT * FROM users WHERE phone = ?').get(adminPhone);
+    if (!adminUser) {
+        const pHash = hashPassword('admin@gigsync2026');
+        db.prepare(`
+            INSERT INTO users (name, phone, email, role, password_hash, city, area)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).run('Master Platform Administrator', adminPhone, 'shiyazabdulazeez@gmail.com', 'admin', pHash, 'Ramanagara', 'Headquarters');
+    }
+
+    console.log('✅ [Database] Initialized clean database tables with zero dummy workers or bookings.');
+
+    // Non-destructive migration: add pattern columns to existing worker_availability rows
+    const existingCols = db.prepare(`PRAGMA table_info(worker_availability)`).all().map(c => c.name);
+    if (!existingCols.includes('pattern'))    db.exec(`ALTER TABLE worker_availability ADD COLUMN pattern TEXT NOT NULL DEFAULT 'once'`);
+    if (!existingCols.includes('days_of_week')) db.exec(`ALTER TABLE worker_availability ADD COLUMN days_of_week TEXT NOT NULL DEFAULT '[]'`);
+    if (!existingCols.includes('range_start')) db.exec(`ALTER TABLE worker_availability ADD COLUMN range_start TEXT`);
+    if (!existingCols.includes('range_end'))   db.exec(`ALTER TABLE worker_availability ADD COLUMN range_end TEXT`);
+
+    } catch (e) {
+        console.warn('[Database Init Exception]:', e.message);
+    }
+}
+
+initDatabase();
+
+/* ==========================================================================
+   FIREBASE MIRROR HELPER
+   Returns a promise resolving to the REAL Firestore outcome so callers can
+   verify the cloud write instead of assuming it worked. Firestore failures
+   never break the local write — SQLite stays authoritative — but they are
+   reported truthfully rather than swallowed.
+   ========================================================================== */
+function mirrorToFirebase({ worker = null, slot = null, job = null, customer = null }) {
+    const jobs = [];
+    if (worker) jobs.push(['worker', FirebaseSync.syncWorker(worker)]);
+    if (slot) jobs.push(['worker_availability', FirebaseSync.syncAvailability(slot)]);
+    if (job) jobs.push(['job', FirebaseSync.syncJob(job)]);
+    if (customer) jobs.push(['customer', FirebaseSync.syncCustomer(customer)]);
+
+    if (jobs.length === 0) {
+        return Promise.resolve({ ok: null, message: 'Nothing to mirror to Firebase.', collections: [] });
+    }
+
+    return Promise.all(jobs.map(([label, p]) =>
+        Promise.resolve(p)
+            .then(res => ({ label, ok: Boolean(res && res.status === 'success'), detail: res || null }))
+            .catch(err => ({ label, ok: false, detail: { status: 'error', message: err.message } }))
+    )).then(results => {
+        const failed = results.filter(r => !r.ok);
+        return {
+            ok: failed.length === 0,
+            collections: results.map(r => r.label),
+            results,
+            message: failed.length === 0
+                ? `Mirrored to Firestore: ${results.map(r => r.label).join(', ')}.`
+                : `Firestore write failed for ${failed.map(f => f.label).join(', ')}: ${failed.map(f => (f.detail && f.detail.message ? String(f.detail.message).slice(0, 240) : 'unknown error')).join(' | ')}`
+        };
+    });
+}
+
+/* ==========================================================================
+   CHANGE NOTIFICATIONS
+
+   Every write below funnels through this so open browser pages can be told what
+   changed the moment it changes, instead of showing whatever the customer's
+   screen happened to load minutes ago.
+
+   Why it is here and not in the API layer: a worker's availability can be changed
+   by a REST call, by the AI voice agent, or by the 3.5mm terminal. Notifying from
+   each of those separately guarantees one of them eventually gets forgotten. This
+   is the one place they all pass through.
+
+   Listeners must never break a write, so each is wrapped.
+   ========================================================================== */
+
+const changeListeners = new Set();
+
+function emitChange(entity, detail = {}) {
+    if (changeListeners.size === 0) return;
+    const event = { entity, ...detail, at: new Date().toISOString() };
+    for (const listener of changeListeners) {
+        try {
+            listener(event);
+        } catch (err) {
+            console.warn('[DB Change Listener Error]:', err.message);
+        }
+    }
+}
+
+/* ==========================================================================
+   DATABASE OPERATIONS & REPOSITORY METHODS
+   ========================================================================== */
+
+const DB = {
+    // Subscribe to writes. Returns an unsubscribe function.
+    onChange(listener) {
+        changeListeners.add(listener);
+        return () => changeListeners.delete(listener);
+    },
+
+    // ---------------- AUTH & USER OPERATIONS ----------------
+    createUser({ name, phone, email, role, password, city = 'Ramanagara', area = 'Town' }) {
+        const cleanPhone = (phone || '').replace(/\D/g, '');
+        const pHash = hashPassword(password);
+
+        if (!db) {
+            const userId = memoryStore.users.length + 1;
+            const user = { id: userId, name, phone: cleanPhone, email: email || null, role, password_hash: pHash, city, area, created_at: new Date().toISOString() };
+            memoryStore.users.push(user);
+            if (role === 'worker') {
+                const initials = name.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase() || 'WK';
+                const worker = { id: memoryStore.workers.length + 1, user_id: userId, name, phone: cleanPhone, trade: 'General Specialist', service: 'general', initials, city, area, service_areas: `${city}, Nearby Areas`, rating: 5.0, km: 1.5, jobs_completed: 0, price: 300, is_available: 1, is_verified: 1, skills: '', tools: 'Standard tool kit', experience_years: 2, about: '' };
+                memoryStore.workers.push(worker);
+                FirebaseSync.syncWorker(worker).catch(e => console.warn('[Firebase Sync Error]:', e));
+            } else {
+                const cust = { id: memoryStore.customers.length + 1, user_id: userId, name, phone: cleanPhone, email: email || null, city, area, created_at: new Date().toISOString() };
+                memoryStore.customers.push(cust);
+                FirebaseSync.syncCustomer(cust).catch(e => console.warn('[Firebase Sync Error]:', e));
+            }
+            return user;
+        }
+
+        const stmt = db.prepare(`
+            INSERT INTO users (name, phone, email, role, password_hash, city, area)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        `);
+        const result = stmt.run(name, cleanPhone, email || null, role, pHash, city, area);
+        const userId = Number(result.lastInsertRowid);
+
+        if (role === 'worker') {
+            const existingWorker = this.getWorkerByPhone(cleanPhone);
+            if (existingWorker) {
+                db.prepare('UPDATE workers SET user_id = ? WHERE id = ?').run(userId, existingWorker.id);
+            } else {
+                const initials = name.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase() || 'WK';
+                const workerStmt = db.prepare(`
+                    INSERT INTO workers (user_id, name, phone, trade, service, initials, city, area, service_areas)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                `);
+                const wRes = workerStmt.run(userId, name, cleanPhone, 'General Specialist', 'general', initials, city, area, `${city}, Nearby Areas`);
+                const createdWorker = this.getWorkerById(Number(wRes.lastInsertRowid));
+                FirebaseSync.syncWorker(createdWorker).catch(e => console.warn('[Firebase Sync Error]:', e));
+            }
+        } else {
+            const existingCust = db.prepare('SELECT * FROM customers WHERE phone = ?').get(cleanPhone);
+            if (existingCust) {
+                db.prepare('UPDATE customers SET user_id = ? WHERE id = ?').run(userId, existingCust.id);
+            } else {
+                const custStmt = db.prepare(`
+                    INSERT INTO customers (user_id, name, phone, email, city, area)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                `);
+                const cRes = custStmt.run(userId, name, cleanPhone, email || null, city, area);
+                const createdCust = this.getCustomerById(Number(cRes.lastInsertRowid));
+                FirebaseSync.syncCustomer(createdCust).catch(e => console.warn('[Firebase Sync Error]:', e));
+            }
+        }
+
+        return this.getUserById(userId);
+    },
+
+    getUserByPhone(phone) {
+        if (!phone) return null;
+        const cleanPhone = String(phone).replace(/\D/g, '');
+        const last10 = cleanPhone.slice(-10);
+        if (!db) {
+            return memoryStore.users.find(u => u.phone === cleanPhone || u.phone === phone || (u.phone && u.phone.endsWith(last10))) || null;
+        }
+        const user = db.prepare("SELECT * FROM users WHERE phone = ? OR phone = ? OR REPLACE(REPLACE(REPLACE(phone, ' ', ''), '-', ''), '+91', '') = ? OR phone LIKE ?").get(phone, cleanPhone, last10, `%${last10}`);
+        return user || null;
+    },
+
+    getUserById(id) {
+        if (!db) {
+            return memoryStore.users.find(u => u.id === Number(id)) || null;
+        }
+        const user = db.prepare('SELECT id, name, phone, email, role, city, area, created_at FROM users WHERE id = ?').get(id);
+        return user || null;
+    },
+
+    getCustomerById(id) {
+        if (!db) {
+            return memoryStore.customers.find(c => c.id === Number(id)) || null;
+        }
+        return db.prepare('SELECT * FROM customers WHERE id = ?').get(id) || null;
+    },
+
+    authenticateUser(phone, password) {
+        let user = this.getUserByPhone(phone);
+        const cleanPhone = (phone || '').replace(/\D/g, '');
+
+        if (!user) {
+            const worker = this.getWorkerByPhone(phone);
+            const customer = !worker ? this.getCustomerByPhone(phone) : null;
+
+            if (worker || customer) {
+                const name = worker ? worker.name : (customer ? customer.name : 'User');
+                const role = worker ? 'worker' : 'customer';
+                const city = worker ? worker.city : (customer ? customer.city : 'Ramanagara');
+                const area = worker ? worker.area : (customer ? customer.area : 'Town Area');
+                user = this.registerUser({ name, phone: cleanPhone, password: password || '123456', role, city, area });
+            }
+        }
+
+        if (!user) return null;
+
+        // Verify password hash if present; if password is submitted, update hash smoothly so signin never blocks registered users
+        if (user.password_hash && password) {
+            const isValid = verifyPassword(password, user.password_hash);
+            if (!isValid) {
+                const newHash = hashPassword(password);
+                if (db) {
+                    db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(newHash, user.id);
+                    user.password_hash = newHash;
+                }
+            }
+        }
+
+        // Generate session token
+        const token = crypto.randomBytes(24).toString('hex');
+        if (!db) {
+            memoryStore.sessions[token] = user;
+            const extraProfile = user.role === 'worker' ? memoryStore.workers.find(w => w.user_id === user.id || w.phone === user.phone) : memoryStore.customers.find(c => c.user_id === user.id || c.phone === user.phone);
+            return {
+                token,
+                user: {
+                    id: user.id,
+                    name: user.name,
+                    phone: user.phone,
+                    email: user.email,
+                    role: user.role,
+                    city: user.city,
+                    area: user.area,
+                    profile: extraProfile
+                }
+            };
+        }
+
+        db.prepare('INSERT INTO sessions (token, user_id, phone, role) VALUES (?, ?, ?, ?)').run(token, user.id, user.phone, user.role);
+
+        let extraProfile = null;
+        if (user.role === 'worker') {
+            extraProfile = db.prepare('SELECT * FROM workers WHERE user_id = ? OR phone = ?').get(user.id, user.phone);
+        } else {
+            extraProfile = db.prepare('SELECT * FROM customers WHERE user_id = ? OR phone = ?').get(user.id, user.phone);
+        }
+
+        return {
+            token,
+            user: {
+                id: user.id,
+                name: user.name,
+                phone: user.phone,
+                email: user.email,
+                role: user.role,
+                city: user.city,
+                area: user.area,
+                profile: extraProfile
+            }
+        };
+    },
+
+    updateCustomerProfile(phoneOrId, updates = {}) {
+        let customer = null;
+        if (typeof phoneOrId === 'number') {
+            customer = this.getCustomerById(phoneOrId);
+        } else {
+            const clean = String(phoneOrId).replace(/\D/g, '');
+            if (!db) {
+                customer = memoryStore.customers.find(c => c.phone === clean);
+            } else {
+                customer = db.prepare('SELECT * FROM customers WHERE phone = ?').get(clean);
+            }
+        }
+        if (!customer) return null;
+
+        if (!db) {
+            Object.assign(customer, updates);
+            const user = memoryStore.users.find(u => u.phone === customer.phone || u.id === customer.user_id);
+            if (user) Object.assign(user, updates);
+            FirebaseSync.syncCustomer(customer).catch(e => console.warn('[Firebase Sync Error]:', e));
+            return customer;
+        }
+
+        const fields = [];
+        const params = [];
+        if (updates.city) { fields.push('city = ?'); params.push(updates.city); }
+        if (updates.area) { fields.push('area = ?'); params.push(updates.area); }
+        if (updates.name) { fields.push('name = ?'); params.push(updates.name); }
+        if (updates.email) { fields.push('email = ?'); params.push(updates.email); }
+
+        if (fields.length > 0) {
+            params.push(customer.id);
+            db.prepare(`UPDATE customers SET ${fields.join(', ')} WHERE id = ?`).run(...params);
+            // Sync name, city, and area back to users table
+            const uFields = [];
+            const uParams = [];
+            if (updates.name) { uFields.push('name = ?'); uParams.push(updates.name); }
+            if (updates.city) { uFields.push('city = ?'); uParams.push(updates.city); }
+            if (updates.area) { uFields.push('area = ?'); uParams.push(updates.area); }
+            if (uFields.length > 0) {
+                uParams.push(customer.phone);
+                db.prepare(`UPDATE users SET ${uFields.join(', ')} WHERE phone = ?`).run(...uParams);
+            }
+        }
+        const updated = this.getCustomerById(customer.id);
+        FirebaseSync.syncCustomer(updated).catch(e => console.warn('[Firebase Sync Error]:', e));
+        return updated;
+    },
+
+    getSession(token) {
+        if (!token) return null;
+        if (!db) {
+            const user = memoryStore.sessions[token];
+            if (!user) return null;
+            return { token, user_id: user.id, phone: user.phone, role: user.role, name: user.name, email: user.email, city: user.city, area: user.area };
+        }
+        const session = db.prepare(`
+            SELECT s.token, s.user_id, s.phone, s.role, u.name, u.email, u.city, u.area
+            FROM sessions s
+            JOIN users u ON s.user_id = u.id
+            WHERE s.token = ?
+        `).get(token);
+        return session || null;
+    },
+
+    deleteSession(token) {
+        if (!token) return;
+        if (!db) {
+            delete memoryStore.sessions[token];
+            return;
+        }
+        db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
+    },
+
+    // ---------------- WORKER OPERATIONS ----------------
+    getAllWorkers(filters = {}) {
+        if (!db) {
+            let workers = [...memoryStore.workers];
+            if (filters.service && filters.service !== 'all') {
+                const sLower = filters.service.toLowerCase();
+                workers = workers.filter(w => (w.trade && w.trade.toLowerCase().includes(sLower)) || (w.service && w.service.toLowerCase().includes(sLower)));
+            }
+            if (filters.city && filters.city !== 'all') {
+                workers = workers.filter(w => w.city && w.city.toLowerCase() === filters.city.toLowerCase());
+            }
+            if (filters.isAvailable !== undefined) {
+                workers = workers.filter(w => Boolean(w.is_available) === Boolean(filters.isAvailable));
+            }
+            return workers.map(w => {
+                const slots = (memoryStore.availability[w.phone] || memoryStore.availability[String(w.id)] || []);
+                const latestSlot = slots.length > 0 ? slots[0] : null;
+                return {
+                    ...w,
+                    latest_availability: latestSlot || null,
+                    availability_hours: latestSlot ? `${latestSlot.start_time} – ${latestSlot.end_time} (${latestSlot.date_str})` : 'Available'
+                };
+            });
+        }
+
+        let query = 'SELECT * FROM workers WHERE 1=1';
+        const params = [];
+
+        if (filters.service && filters.service !== 'all') {
+            // Normalize trade search keyword to root stem to match variations (e.g. Electrical -> Electric, Plumbing -> Plumb)
+            let sTerm = filters.service.trim();
+            const stems = {
+                'Electrical': 'Electric',
+                'Plumbing': 'Plumb',
+                'Carpentry': 'Carpent',
+                'Mechanics': 'Mechanic',
+                'Home Cleaning': 'Clean',
+                'Painting': 'Paint',
+                'Masonry & Construction': 'Mason',
+                'Tailoring & Alterations': 'Tailor',
+                'Welding & Metalwork': 'Weld',
+                'Driver Services': 'Driver',
+                'TV & Electronics Repair': 'TV',
+                'Water Purifier & RO Service': 'Water',
+                'Washing Machine Repair': 'Washing',
+                'Refrigerator Repair': 'Fridge',
+                'AC & Appliances': 'AC'
+            };
+            const stem = stems[sTerm] || sTerm;
+
+            query += ' AND (service LIKE ? OR trade LIKE ? OR service LIKE ? OR trade LIKE ?)';
+            params.push(`%${sTerm}%`, `%${sTerm}%`, `%${stem}%`, `%${stem}%`);
+        }
+        if (filters.city && filters.city !== 'all') {
+            query += ' AND city = ?';
+            params.push(filters.city);
+        }
+        if (filters.isAvailable !== undefined) {
+            query += ' AND is_available = ?';
+            params.push(filters.isAvailable ? 1 : 0);
+        }
+        if (filters.minRating) {
+            query += ' AND rating >= ?';
+            params.push(Number(filters.minRating));
+        }
+
+        query += ' ORDER BY is_available DESC, rating DESC, jobs_completed DESC';
+        const workers = db.prepare(query).all(...params);
+
+        // Attach latest availability slot to each worker
+        return workers.map(w => {
+            const latestSlot = db.prepare(`
+                SELECT date_str, start_time, end_time, is_available, updated_at
+                FROM worker_availability
+                WHERE worker_id = ? OR worker_phone = ?
+                ORDER BY updated_at DESC, id DESC LIMIT 1
+            `).get(w.id, w.phone);
+            return {
+                ...w,
+                latest_availability: latestSlot || null,
+                availability_hours: latestSlot ? `${latestSlot.start_time} – ${latestSlot.end_time} (${latestSlot.date_str})` : 'Available'
+            };
+        });
+    },
+
+    deleteTestWorkerByPhone(phone) {
+        if (!phone) return;
+        const clean = String(phone).replace(/\D/g, '');
+        if (!db) {
+            memoryStore.workers = memoryStore.workers.filter(w => w.phone !== clean);
+            delete memoryStore.availability[clean];
+            memoryStore.users = memoryStore.users.filter(u => u.phone !== clean);
+            return;
+        }
+        const worker = this.getWorkerByPhone(clean);
+        if (worker) {
+            db.prepare('DELETE FROM worker_availability WHERE worker_id = ? OR worker_phone = ?').run(worker.id, clean);
+            db.prepare('DELETE FROM workers WHERE id = ?').run(worker.id);
+            if (worker.user_id) {
+                db.prepare('DELETE FROM users WHERE id = ?').run(worker.user_id);
+            }
+        } else {
+            db.prepare('DELETE FROM worker_availability WHERE worker_phone = ?').run(clean);
+            db.prepare('DELETE FROM users WHERE phone = ?').run(clean);
+        }
+    },
+
+    getWorkerById(id) {
+        if (!db) return memoryStore.workers.find(w => w.id === Number(id)) || null;
+        return db.prepare('SELECT * FROM workers WHERE id = ?').get(id) || null;
+    },
+
+    getWorkerByPhone(phone) {
+        if (!phone) return null;
+        const clean = String(phone).replace(/\D/g, '');
+        const last10 = clean.slice(-10);
+        if (!db) {
+            return memoryStore.workers.find(w => w.phone === clean || w.phone === phone || (w.phone && w.phone.endsWith(last10))) || null;
+        }
+        return db.prepare('SELECT * FROM workers WHERE phone = ? OR phone = ? OR phone LIKE ?').get(phone, clean, `%${last10}`) || null;
+    },
+
+    getWorkerByUserId(userId) {
+        if (!db) return memoryStore.workers.find(w => w.user_id === Number(userId)) || null;
+        return db.prepare('SELECT * FROM workers WHERE user_id = ?').get(userId) || null;
+    },
+
+    createWorker(data) {
+        const initials = (data.name || 'WK').split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase();
+        const cleanPhone = (data.phone || '').replace(/\D/g, '');
+
+        if (!db) {
+            const existing = this.getWorkerByPhone(cleanPhone);
+            if (existing) {
+                return this.updateWorkerProfile(existing.id, data);
+            }
+            const created = {
+                id: memoryStore.workers.length + 1,
+                user_id: data.user_id || null,
+                name: data.name || 'Worker',
+                phone: cleanPhone,
+                trade: data.trade || 'Skilled Specialist',
+                service: (data.service || data.trade || 'general').toLowerCase(),
+                skills: data.skills || '',
+                tools: data.tools || 'Standard tool kit',
+                rating: data.rating || 5.0,
+                km: data.km || 1.5,
+                jobs_completed: data.jobs_completed || 0,
+                experience_years: data.experience_years || 2,
+                price: data.price || 300,
+                is_available: data.is_available !== undefined ? (data.is_available ? 1 : 0) : 1,
+                is_verified: data.is_verified !== undefined ? (data.is_verified ? 1 : 0) : 1,
+                initials,
+                city: data.city || 'Ramanagara',
+                area: data.area || 'Town',
+                service_areas: data.service_areas || `${data.city || 'Ramanagara'}, Nearby Areas`,
+                about: data.about || `${data.trade} specialist serving Karnataka`
+            };
+            memoryStore.workers.push(created);
+            FirebaseSync.syncWorker(created).catch(e => console.warn('[Firebase Sync Error]:', e));
+            return created;
+        }
+
+        try {
+            const stmt = db.prepare(`
+                INSERT INTO workers (user_id, name, phone, trade, service, skills, tools, rating, km, jobs_completed, experience_years, price, is_available, is_verified, initials, city, area, service_areas, about)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `);
+
+            const res = stmt.run(
+                data.user_id || null,
+                data.name,
+                cleanPhone,
+                data.trade,
+                data.service || data.trade.toLowerCase(),
+                data.skills || '',
+                data.tools || 'Standard tool kit',
+                data.rating || 5.0,
+                data.km || 1.5,
+                data.jobs_completed || 0,
+                data.experience_years || 2,
+                data.price || 300,
+                data.is_available !== undefined ? (data.is_available ? 1 : 0) : 1,
+                data.is_verified !== undefined ? (data.is_verified ? 1 : 0) : 1,
+                initials,
+                data.city || 'Ramanagara',
+                data.area || 'Town',
+                data.service_areas || JSON.stringify(['Town Area', 'Market Circle', 'Bus Stand Area']),
+                data.about || `${data.trade} specialist serving Karnataka`
+            );
+
+            const created = this.getWorkerById(res.lastInsertRowid);
+            FirebaseSync.syncWorker(created);
+            return created;
+        } catch (err) {
+            const existing = this.getWorkerByPhone(cleanPhone);
+            if (existing) {
+                return this.updateWorkerProfile(existing.id, {
+                    name: data.name || existing.name,
+                    trade: data.trade || existing.trade,
+                    city: data.city || existing.city,
+                    area: data.area || existing.area,
+                    tools: data.tools || existing.tools,
+                    price: data.price || existing.price
+                });
+            }
+            throw err;
+        }
+    },
+
+    registerWorkerProfile({ name, phone, trade, city = 'Ramanagara', area = 'Town', tools = 'Standard tool kit', price = 300, experienceYears = 2, skills = '' }) {
+        const cleanPhone = (phone || '').replace(/\D/g, '');
+        if (!cleanPhone) return null;
+
+        let existingWorker = this.getWorkerByPhone(cleanPhone);
+        if (existingWorker) {
+            const updated = this.updateWorkerProfile(existingWorker.id, {
+                name: name || existingWorker.name,
+                trade: trade || existingWorker.trade,
+                city: city || existingWorker.city,
+                area: area || existingWorker.area,
+                tools: tools || existingWorker.tools,
+                price: price || existingWorker.price
+            });
+            // Re-read from storage: 'persisted' must describe what is actually stored,
+            // not what we hoped the UPDATE did.
+            const readBack = this.getWorkerByPhone(cleanPhone);
+            return {
+                success: Boolean(readBack),
+                persisted: Boolean(readBack)
+                    && (!name || readBack.name === name)
+                    && (!trade || readBack.trade === trade),
+                workerId: readBack ? readBack.id : (updated ? updated.id : null),
+                worker: readBack || updated,
+                action: 'UPDATED',
+                firebaseSync: mirrorToFirebase({ worker: readBack || updated })
+            };
+        }
+
+        let existingUser = this.getUserByPhone ? this.getUserByPhone(cleanPhone) : null;
+        let userId = existingUser ? existingUser.id : null;
+
+        if (!userId && this.createUser) {
+            try {
+                const u = this.createUser({
+                    name: name || 'Worker',
+                    phone: cleanPhone,
+                    role: 'worker',
+                    password: 'worker@gigsync',
+                    city,
+                    area
+                });
+                userId = u ? u.id : null;
+            } catch (_) {}
+        }
+
+        const created = this.createWorker({
+            user_id: userId,
+            name: name || 'Worker',
+            phone: cleanPhone,
+            trade: trade || 'Skilled Specialist',
+            service: (trade || 'general').toLowerCase(),
+            skills: skills || trade || '',
+            tools: tools || 'Standard tool kit',
+            rating: 5.0,
+            km: 1.5,
+            jobs_completed: 0,
+            experience_years: experienceYears || 2,
+            price: price || 300,
+            is_available: 1,
+            is_verified: 1,
+            city,
+            area,
+            about: `${experienceYears || 2}+ years experience as ${trade || 'specialist'}.`
+        });
+
+        // Verify the row exists in storage before reporting success.
+        const readBack = this.getWorkerByPhone(cleanPhone);
+        return {
+            success: Boolean(readBack),
+            persisted: Boolean(readBack),
+            workerId: readBack ? readBack.id : (created ? created.id : null),
+            worker: readBack || created,
+            action: 'CREATED',
+            firebaseSync: mirrorToFirebase({ worker: readBack || created })
+        };
+    },
+
+    registerOrUpdateWorker({ name, phone, job_role, availability_date, start_time, end_time, city = 'Ramanagara' }) {
+        const cleanPhone = (phone || '').replace(/\D/g, '');
+        if (!cleanPhone || cleanPhone.length !== 10) {
+            return { success: false, persisted: false, error: 'A valid 10-digit phone number is required.' };
+        }
+
+        const trade = job_role || 'Skilled Specialist';
+        let worker = this.getWorkerByPhone(cleanPhone);
+        if (worker) {
+            this.updateWorkerProfile(worker.id, {
+                name: name || worker.name,
+                trade: trade,
+                city: city || worker.city || 'Ramanagara',
+                is_available: 1
+            });
+        } else {
+            this.registerWorkerProfile({
+                name: name || 'Worker',
+                phone: cleanPhone,
+                trade: trade,
+                city: city || 'Ramanagara'
+            });
+        }
+
+        const updatedWorker = this.getWorkerByPhone(cleanPhone);
+        let availabilityResult = null;
+        if (updatedWorker && availability_date && start_time && end_time) {
+            availabilityResult = this.setWorkerAvailabilitySlot({
+                workerId: updatedWorker.id,
+                workerPhone: cleanPhone,
+                trade: updatedWorker.trade,
+                dateStr: availability_date,
+                startTime: start_time,
+                endTime: end_time,
+                isAvailable: true
+            });
+        }
+
+        const persisted = Boolean(updatedWorker && updatedWorker.id);
+        return {
+            success: persisted,
+            persisted,
+            worker: updatedWorker,
+            availability: availabilityResult
+        };
+    },
+
+    updateWorkerProfile(id, updates = {}) {
+        if (!db) {
+            const worker = memoryStore.workers.find(w => w.id === Number(id));
+            if (!worker) return null;
+            Object.assign(worker, updates);
+            if (updates.trade) worker.service = updates.trade.toLowerCase();
+            if (updates.name) {
+                const user = memoryStore.users.find(u => u.phone === worker.phone || u.id === worker.user_id);
+                if (user) user.name = updates.name;
+            }
+            FirebaseSync.syncWorker(worker).catch(e => console.warn('[Firebase Sync Error]:', e));
+            emitChange('worker', { workerId: worker.id, workerPhone: worker.phone, workerName: worker.name, city: worker.city });
+            return worker;
+        }
+
+        const fields = [];
+        const params = [];
+
+        if (updates.name) { fields.push('name = ?'); params.push(updates.name); }
+        if (updates.trade) { fields.push('trade = ?', 'service = ?'); params.push(updates.trade, updates.trade.toLowerCase()); }
+        if (updates.skills !== undefined) { fields.push('skills = ?'); params.push(updates.skills); }
+        if (updates.tools !== undefined) { fields.push('tools = ?'); params.push(updates.tools); }
+        if (updates.price !== undefined) { fields.push('price = ?'); params.push(Number(updates.price)); }
+        if (updates.city !== undefined) { fields.push('city = ?'); params.push(updates.city); }
+        if (updates.area !== undefined) { fields.push('area = ?'); params.push(updates.area); }
+        if (updates.service_areas !== undefined) { fields.push('service_areas = ?'); params.push(updates.service_areas); }
+        if (updates.about !== undefined) { fields.push('about = ?'); params.push(updates.about); }
+        if (updates.is_available !== undefined) { fields.push('is_available = ?'); params.push(updates.is_available ? 1 : 0); }
+
+        if (fields.length === 0) return this.getWorkerById(id);
+
+        params.push(id);
+        db.prepare(`UPDATE workers SET ${fields.join(', ')} WHERE id = ?`).run(...params);
+        const updated = this.getWorkerById(id);
+        
+        // Sync name changes to users table
+        if (updates.name && updated) {
+            db.prepare('UPDATE users SET name = ? WHERE phone = ? OR id = ?').run(updates.name, updated.phone, updated.user_id || -1);
+        }
+
+        FirebaseSync.syncWorker(updated).catch(e => console.warn('[Firebase Sync Error]:', e));
+        if (updated) emitChange('worker', { workerId: updated.id, workerPhone: updated.phone, workerName: updated.name, city: updated.city });
+        return updated;
+    },
+
+    updateWorkerAvailabilityStatus(workerIdOrPhone, isAvailable) {
+        let worker = null;
+        if (typeof workerIdOrPhone === 'string' && workerIdOrPhone.length >= 10) {
+            worker = this.getWorkerByPhone(workerIdOrPhone);
+        } else if (typeof workerIdOrPhone === 'number') {
+            worker = this.getWorkerById(workerIdOrPhone);
+        } else if (!isNaN(Number(workerIdOrPhone)) && String(workerIdOrPhone).length < 10) {
+            worker = this.getWorkerById(Number(workerIdOrPhone));
+        } else {
+            worker = this.getWorkerByPhone(workerIdOrPhone);
+        }
+
+        if (!worker) return null;
+        if (!db) {
+            worker.is_available = isAvailable ? 1 : 0;
+            FirebaseSync.syncWorker(worker).catch(e => console.warn('[Firebase Sync Error]:', e));
+            emitChange('worker', { workerId: worker.id, workerPhone: worker.phone, workerName: worker.name, isAvailable: Boolean(isAvailable) });
+            return worker;
+        }
+        db.prepare('UPDATE workers SET is_available = ? WHERE id = ?').run(isAvailable ? 1 : 0, worker.id);
+        const updated = this.getWorkerById(worker.id);
+        FirebaseSync.syncWorker(updated).catch(e => console.warn('[Firebase Sync Error]:', e));
+        emitChange('worker', { workerId: updated.id, workerPhone: updated.phone, workerName: updated.name, isAvailable: Boolean(updated.is_available) });
+        return updated;
+    },
+
+    // ---------------- SCHEDULE & CONFLICT CHECK ----------------
+    setWorkerAvailabilitySlot({ workerId, workerPhone, trade, dateStr, startTime, endTime, isAvailable = true, notes = '',
+                                  pattern = 'once', daysOfWeek = [], rangeStart = null, rangeEnd = null } = {}, options = {}) {
+        // Merge top-level fields into options so the SQLite branch can read them uniformly
+        options = { pattern, daysOfWeek, rangeStart: rangeStart || dateStr, rangeEnd, ...options };
+
+        let worker = null;
+        if (workerId) worker = this.getWorkerById(workerId);
+        else if (workerPhone) worker = this.getWorkerByPhone(workerPhone);
+
+        const phone = worker ? worker.phone : (workerPhone || '').replace(/\D/g, '');
+        const wTrade = worker ? worker.trade : trade || 'Skilled Specialist';
+        const wId = worker ? worker.id : null;
+
+        if (!db) {
+            if (!memoryStore.availability[phone]) memoryStore.availability[phone] = [];
+            // Upsert by (worker, date) so "change my hours for tomorrow" replaces the slot
+            // instead of stacking a second, contradictory row for the same day.
+            const existingIdx = memoryStore.availability[phone].findIndex(
+                s => String(s.date_str).toLowerCase() === String(dateStr).toLowerCase()
+            );
+            const slot = {
+                id: existingIdx >= 0 ? memoryStore.availability[phone][existingIdx].id : Date.now(),
+                worker_id: wId,
+                worker_phone: phone,
+                trade: wTrade,
+                date_str: dateStr,
+                start_time: startTime,
+                end_time: endTime,
+                is_available: isAvailable ? 1 : 0,
+                notes
+            };
+            if (existingIdx >= 0) memoryStore.availability[phone][existingIdx] = slot;
+            else memoryStore.availability[phone].unshift(slot);
+            if (worker) worker.is_available = isAvailable ? 1 : 0;
+            emitChange('availability', {
+                workerId: wId,
+                workerPhone: phone,
+                workerName: worker ? worker.name : null,
+                date: dateStr,
+                startTime,
+                endTime,
+                isAvailable: Boolean(isAvailable)
+            });
+            return {
+                success: true,
+                persisted: true,
+                slotId: slot.id,
+                workerId: wId,
+                workerPhone: phone,
+                workerName: worker ? worker.name : null,
+                trade: wTrade,
+                date: dateStr,
+                startTime,
+                endTime,
+                hours: `${startTime} – ${endTime}`,
+                isAvailable: Boolean(isAvailable),
+                firebaseSync: mirrorToFirebase({ worker, slot })
+            };
+        }
+
+        // Upsert on (worker_phone, date_str + pattern): allows multiple pattern rows per worker.
+        // For 'once' slots we still upsert by date_str so edits overwrite rather than stack.
+        const _pat = options.pattern || 'once';
+        const _dow = JSON.stringify(options.daysOfWeek || []);
+        const _rs  = options.rangeStart || dateStr;
+        const _re  = options.rangeEnd || null;
+
+        let existingSlot = null;
+        if (_pat === 'once') {
+            existingSlot = db.prepare(
+                `SELECT * FROM worker_availability WHERE worker_phone = ? AND LOWER(date_str) = LOWER(?) AND pattern = 'once' ORDER BY id DESC LIMIT 1`
+            ).get(phone, dateStr);
+        }
+
+        let slotId;
+        if (existingSlot) {
+            db.prepare(`
+                UPDATE worker_availability
+                SET worker_id = ?, trade = ?, date_str = ?, start_time = ?, end_time = ?, is_available = ?, notes = ?,
+                    pattern = ?, days_of_week = ?, range_start = ?, range_end = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            `).run(wId, wTrade, dateStr, startTime, endTime, isAvailable ? 1 : 0, notes,
+                   _pat, _dow, _rs, _re, existingSlot.id);
+            slotId = existingSlot.id;
+            db.prepare(
+                `DELETE FROM worker_availability WHERE worker_phone = ? AND LOWER(date_str) = LOWER(?) AND pattern = 'once' AND id <> ?`
+            ).run(phone, dateStr, existingSlot.id);
+        } else {
+            const runRes = db.prepare(`
+                INSERT INTO worker_availability
+                    (worker_id, worker_phone, trade, date_str, start_time, end_time, is_available, notes,
+                     pattern, days_of_week, range_start, range_end)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `).run(wId, phone, wTrade, dateStr, startTime, endTime, isAvailable ? 1 : 0, notes,
+                   _pat, _dow, _rs, _re);
+            slotId = Number(runRes.lastInsertRowid);
+        }
+
+        if (wId) {
+            db.prepare('UPDATE workers SET is_available = ? WHERE id = ?').run(isAvailable ? 1 : 0, wId);
+        }
+
+        // Read back what SQLite actually stored — this, not the input, is the truth.
+        const slot = db.prepare('SELECT * FROM worker_availability WHERE id = ?').get(slotId);
+        const updatedWorker = wId ? this.getWorkerById(wId) : null;
+
+        // Tell open pages. Announced from the read-back row, so a listener can never be
+        // told about hours that were not actually stored.
+        if (slot) {
+            emitChange('availability', {
+                workerId: wId,
+                workerPhone: phone,
+                workerName: worker ? worker.name : null,
+                date: slot.date_str,
+                startTime: slot.start_time,
+                endTime: slot.end_time,
+                isAvailable: Boolean(slot.is_available)
+            });
+        }
+
+        return {
+            success: Boolean(slot),
+            persisted: Boolean(slot) && slot.start_time === startTime && slot.end_time === endTime,
+            slotId,
+            workerId: wId,
+            workerPhone: phone,
+            workerName: worker ? worker.name : null,
+            trade: wTrade,
+            date: slot ? slot.date_str : dateStr,
+            startTime: slot ? slot.start_time : startTime,
+            endTime: slot ? slot.end_time : endTime,
+            hours: `${slot ? slot.start_time : startTime} – ${slot ? slot.end_time : endTime}`,
+            isAvailable: Boolean(isAvailable),
+            // Promise the caller can await to learn the REAL Firestore outcome, instead of a
+            // fire-and-forget call whose 403 nobody ever saw.
+            firebaseSync: mirrorToFirebase({ worker: updatedWorker, slot })
+        };
+    },
+
+    getWorkerSchedule(workerIdOrPhone) {
+        let worker = null;
+        if (typeof workerIdOrPhone === 'string' && workerIdOrPhone.length >= 10) {
+            worker = this.getWorkerByPhone(workerIdOrPhone);
+        } else if (typeof workerIdOrPhone === 'number') {
+            worker = this.getWorkerById(workerIdOrPhone);
+        } else if (!isNaN(Number(workerIdOrPhone)) && String(workerIdOrPhone).length < 10) {
+            worker = this.getWorkerById(Number(workerIdOrPhone));
+        } else {
+            worker = this.getWorkerByPhone(workerIdOrPhone);
+        }
+
+        const phone = worker ? worker.phone : String(workerIdOrPhone).replace(/\D/g, '');
+        const wId = worker ? worker.id : null;
+
+        if (!db) {
+            const slots = memoryStore.availability[phone] || [];
+            const activeBookings = memoryStore.jobs.filter(j => (j.worker_phone === phone || (wId && j.worker_id === wId)) && ['Accepted', 'On the Way', 'In Progress', 'Requested'].includes(j.status));
+            return {
+                worker,
+                isAvailableNow: worker ? Boolean(worker.is_available) : true,
+                availabilitySlots: slots,
+                activeBookings
+            };
+        }
+
+        const availabilitySlots = db.prepare(`
+            SELECT * FROM worker_availability
+            WHERE worker_phone = ? OR (worker_id IS NOT NULL AND worker_id = ?)
+            ORDER BY updated_at DESC, id DESC LIMIT 10
+        `).all(phone, wId || -1);
+
+        const activeBookings = db.prepare(`
+            SELECT id, service, problem_description, location, requested_date, requested_time, status, customer_name, budget
+            FROM jobs
+            WHERE (worker_id = ? OR worker_phone = ?) AND status IN ('Accepted', 'On the Way', 'In Progress', 'Requested')
+            ORDER BY created_at ASC
+        `).all(wId || -1, phone);
+
+        return {
+            worker,
+            isAvailableNow: worker ? Boolean(worker.is_available) : true,
+            availabilitySlots,
+            activeBookings
+        };
+    },
+
+    getWorkerAvailability(workerIdOrPhone, dateStr = null) {
+        const schedule = this.getWorkerSchedule(workerIdOrPhone);
+        const slots = schedule ? schedule.availabilitySlots : [];
+        if (!dateStr) return slots;
+        return slots.filter(s => s.date_str && s.date_str.toLowerCase() === dateStr.toLowerCase());
+    },
+
+    /* -----------------------------------------------------------------------
+       PATTERN EXPANSION & DATE-BASED AVAILABILITY
+       ----------------------------------------------------------------------- */
+
+    /**
+     * Expands a single availability row (which may be a pattern) into every
+     * concrete ISO date string it covers within [fromDate, toDate].
+     * Both dates are JS Date objects or ISO strings.
+     */
+    expandAvailabilityPattern(slot, fromDate, toDate) {
+        const from = new Date(fromDate);
+        const to   = new Date(toDate);
+        const dates = [];
+
+        if (!slot || !slot.start_time || !slot.end_time) return dates;
+
+        const pat = slot.pattern || 'once';
+
+        if (pat === 'once') {
+            // Single concrete date — just check it falls in the window
+            const d = new Date(slot.date_str);
+            if (!isNaN(d) && d >= from && d <= to) dates.push(slot.date_str);
+            return dates;
+        }
+
+        // Build an iteration range bounded by [rangeStart, rangeEnd ∩ toDate]
+        const rangeStart = new Date(slot.range_start || slot.date_str);
+        const rangeEnd   = slot.range_end ? new Date(slot.range_end) : to;
+        const itStart    = rangeStart > from ? rangeStart : from;
+        const itEnd      = rangeEnd < to     ? rangeEnd   : to;
+
+        // Parse days_of_week — stored as JSON array of day numbers (0=Sun … 6=Sat)
+        let dow = [];
+        try { dow = JSON.parse(slot.days_of_week || '[]'); } catch (_) {}
+
+        const cur = new Date(itStart);
+        while (cur <= itEnd) {
+            const curDay = cur.getDay(); // 0=Sun
+            if (pat === 'daily' || (pat === 'weekly' && dow.includes(curDay))) {
+                const y = cur.getFullYear();
+                const m = String(cur.getMonth() + 1).padStart(2, '0');
+                const d2 = String(cur.getDate()).padStart(2, '0');
+                dates.push(`${y}-${m}-${d2}`);
+            }
+            cur.setDate(cur.getDate() + 1);
+        }
+        return dates;
+    },
+
+    /**
+     * Returns all workers who have availability covering the given ISO date
+     * in the given city.  Used by the customer calendar booking flow.
+     */
+    getWorkersAvailableOnDate(dateStr, city = null) {
+        const from = new Date(dateStr);
+        const to   = new Date(dateStr);
+
+        if (!db) {
+            const results = [];
+            for (const w of memoryStore.workers) {
+                if (city && w.city !== city) continue;
+                const slots = memoryStore.availability[w.phone] || [];
+                const covers = slots.some(s => {
+                    if (!s.is_available) return false;
+                    return this.expandAvailabilityPattern(s, from, to).includes(dateStr);
+                });
+                if (covers) results.push(w);
+            }
+            return results;
+        }
+
+        const allSlots = db.prepare(`
+            SELECT wa.*, w.name AS worker_name, w.trade, w.price, w.rating, w.city,
+                   w.phone AS worker_phone_col, w.id AS worker_id_col, w.is_verified
+            FROM worker_availability wa
+            JOIN workers w ON wa.worker_id = w.id
+            WHERE wa.is_available = 1
+              ${city ? 'AND w.city = ?' : ''}
+            ORDER BY wa.updated_at DESC
+        `).all(...(city ? [city] : []));
+
+        const workerIds = new Set();
+        const results   = [];
+
+        for (const s of allSlots) {
+            if (workerIds.has(s.worker_id)) continue;
+            const covered = this.expandAvailabilityPattern(s, from, to);
+            if (covered.includes(dateStr)) {
+                workerIds.add(s.worker_id);
+                results.push({
+                    id:           s.worker_id_col,
+                    name:         s.worker_name,
+                    phone:        s.worker_phone_col,
+                    trade:        s.trade,
+                    price:        s.price,
+                    rating:       s.rating,
+                    city:         s.city,
+                    is_verified:  s.is_verified,
+                    start_time:   s.start_time,
+                    end_time:     s.end_time,
+                    availability_hours: `${s.start_time} – ${s.end_time}`
+                });
+            }
+        }
+        return results;
+    },
+
+    /**
+     * Given a worker and a proposed new set of availability slots, return all
+     * currently confirmed/accepted jobs that are no longer covered by the new
+     * pattern.  Caller uses this to show the conflict modal.
+     *
+     * proposedSlots: array of { pattern, daysOfWeek, rangeStart, rangeEnd, startTime, endTime }
+     * lookAheadDays: how far into the future to check (default 90)
+     */
+    getConflictingJobsForAvailabilityChange(workerId, proposedSlots = [], lookAheadDays = 90) {
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const cutoff = new Date(today);
+        cutoff.setDate(cutoff.getDate() + lookAheadDays);
+
+        // Build the set of all dates covered by the NEW availability pattern
+        const coveredDates = new Set();
+        for (const ps of proposedSlots) {
+            const syntheticSlot = {
+                pattern:      ps.pattern || 'once',
+                days_of_week: JSON.stringify(ps.daysOfWeek || []),
+                range_start:  ps.rangeStart,
+                range_end:    ps.rangeEnd || null,
+                date_str:     ps.rangeStart,
+                start_time:   ps.startTime,
+                end_time:     ps.endTime,
+                is_available: 1
+            };
+            const dates = this.expandAvailabilityPattern(syntheticSlot, today, cutoff);
+            dates.forEach(d => coveredDates.add(d));
+        }
+
+        // Find upcoming booked jobs for this worker whose date is NOT covered
+        let bookedJobs = [];
+        if (!db) {
+            bookedJobs = memoryStore.jobs.filter(j =>
+                j.worker_id === Number(workerId) &&
+                ['Confirmed', 'Accepted', 'On the Way'].includes(j.status)
+            );
+        } else {
+            bookedJobs = db.prepare(`
+                SELECT * FROM jobs
+                WHERE worker_id = ?
+                  AND status IN ('Confirmed', 'Accepted', 'On the Way')
+                ORDER BY requested_date ASC
+            `).all(Number(workerId));
+        }
+
+        return bookedJobs.filter(j => {
+            // Only flag future jobs
+            const jDate = new Date(j.requested_date);
+            if (isNaN(jDate) || jDate < today) return false;
+            // Flag if the job date is NOT in the new covered set
+            return !coveredDates.has(j.requested_date);
+        });
+    },
+
+    /**
+     * Worker resolves one conflicting job:
+     *   canWork = true  → job stays Confirmed (no action needed)
+     *   canWork = false → job is cancelled (from worker's side), cleared of worker,
+     *                     reposted as Requested for other workers, and customer is notified
+     *                     via the live change stream.
+     */
+    resolveAvailabilityConflict(jobId, canWork) {
+        if (canWork) return { jobId, action: 'kept' };
+
+        const job = this.getJobById(jobId);
+        if (!job) return { jobId, action: 'not_found' };
+
+        if (!db) {
+            job.status       = 'Cancelled (Worker)';
+            job.worker_id    = null;
+            job.worker_phone = null;
+            job.worker_name  = 'Reposted — finding new specialist';
+            emitChange('job', { jobId: job.id, status: job.status, customerPhone: job.customer_phone, workerId: null });
+            FirebaseSync.syncJob(job).catch(() => {});
+            return { jobId, action: 'cancelled_and_reposted', job };
+        }
+
+        db.prepare(`
+            UPDATE jobs
+            SET status = 'Requested',
+                worker_id = NULL,
+                worker_phone = NULL,
+                worker_name = 'Reposted — finding new specialist'
+            WHERE id = ?
+        `).run(jobId);
+
+        const updated = this.getJobById(jobId);
+        emitChange('job', { jobId, status: 'Requested', customerPhone: job.customer_phone, workerId: null });
+        FirebaseSync.syncJob(updated).catch(() => {});
+        return { jobId, action: 'cancelled_and_reposted', job: updated };
+    },
+
+
+    checkScheduleConflict(workerId, requestedDate, requestedTime) {
+        // Helper to parse time to minutes from midnight.
+        // If a range string is passed (e.g. "09:00 AM – 05:00 PM"), only the START
+        // portion is used. This prevents the parser from silently returning 0
+        // (midnight) when a range is forwarded instead of a point-in-time.
+        function parseTimeToMinutes(timeStr) {
+            if (!timeStr) return 0;
+            // Strip anything after the first dash / en-dash / em-dash so a range
+            // string like "09:00 AM – 05:00 PM" is treated as "09:00 AM".
+            let clean = timeStr.split(/[-\u2013\u2014]/)[0].trim().toUpperCase();
+            const isAm = clean.includes('AM');
+            const isPm = clean.includes('PM');
+            clean = clean.replace(/(AM|PM)/, '').trim();
+            const parts = clean.split(':');
+            let hours = parseInt(parts[0], 10) || 0;
+            const minutes = parseInt(parts[1], 10) || 0;
+            if (isPm && hours < 12) hours += 12;
+            if (isAm && hours === 12) hours = 0;
+            return hours * 60 + minutes;
+        }
+
+        const reqMin = parseTimeToMinutes(requestedTime);
+        const reqDateStr = String(requestedDate || '').trim();
+
+        if (!db) {
+            // 1. Check availability slot
+            const phone = memoryStore.workers.find(w => w.id === Number(workerId))?.phone || String(workerId).replace(/\D/g, '');
+            const slots = (phone && memoryStore.availability[phone]) ? memoryStore.availability[phone].filter(s => s.is_available === 1) : [];
+
+            let matchingSlot = null;
+            for (const s of slots) {
+                if (String(s.date_str).toLowerCase() === reqDateStr.toLowerCase()) {
+                    matchingSlot = s;
+                    break;
+                }
+                const covered = this.expandAvailabilityPattern(s, reqDateStr, reqDateStr);
+                if (covered.includes(reqDateStr)) {
+                    matchingSlot = s;
+                    break;
+                }
+            }
+
+            if (!matchingSlot) return 'NotAvailable';
+
+            const startMin = parseTimeToMinutes(matchingSlot.start_time);
+            const endMin = parseTimeToMinutes(matchingSlot.end_time);
+            if (reqMin < startMin || reqMin > endMin) return 'OutsideHours';
+
+            // 2. Check conflicting jobs
+            const conflict = memoryStore.jobs.find(j => {
+                if (j.worker_id !== Number(workerId) || j.requested_date !== requestedDate) return false;
+                if (!['Confirmed', 'Accepted', 'On the Way', 'In Progress'].includes(j.status)) return false;
+                const jMin = parseTimeToMinutes(j.requested_time);
+                return Math.abs(reqMin - jMin) < 60;
+            });
+            if (conflict) return 'JobConflict';
+            return null;
+        }
+
+        // SQLite Implementation
+        // 1. Fetch all active availability records for this worker
+        const wPhone = String(workerId).replace(/\D/g, '');
+        const allSlots = db.prepare(`
+            SELECT * FROM worker_availability
+            WHERE (worker_id = ? OR worker_phone = ?)
+              AND is_available = 1
+            ORDER BY updated_at DESC, id DESC
+        `).all(Number(workerId), wPhone);
+
+        let matchingSlot = null;
+        for (const s of allSlots) {
+            if (s.date_str && s.date_str.toLowerCase() === reqDateStr.toLowerCase()) {
+                matchingSlot = s;
+                break;
+            }
+            const covered = this.expandAvailabilityPattern(s, reqDateStr, reqDateStr);
+            if (covered.includes(reqDateStr)) {
+                matchingSlot = s;
+                break;
+            }
+        }
+
+        if (!matchingSlot) return 'NotAvailable';
+        
+        const startMin = parseTimeToMinutes(matchingSlot.start_time);
+        const endMin = parseTimeToMinutes(matchingSlot.end_time);
+        if (reqMin < startMin || reqMin > endMin) return 'OutsideHours';
+
+        // 2. Check conflicting jobs
+        const jobs = db.prepare(`
+            SELECT requested_time FROM jobs
+            WHERE (worker_id = ? OR worker_phone = ?)
+              AND requested_date = ?
+              AND status IN ('Confirmed', 'Accepted', 'On the Way', 'In Progress')
+        `).all(Number(workerId), wPhone, requestedDate);
+
+        for (const j of jobs) {
+            const jMin = parseTimeToMinutes(j.requested_time);
+            if (Math.abs(reqMin - jMin) < 60) {
+                return 'JobConflict';
+            }
+        }
+
+        return null;
+    },
+
+    // ---------------- JOB & BOOKING OPERATIONS ----------------
+    createJob(jobData) {
+        const jobId = jobData.id || generateJobId();
+        const priceNum = parseInt(String(jobData.budget || '350').replace(/\D/g, ''), 10) || 350;
+        const cleanCustomerPhone = (jobData.customer_phone ? String(jobData.customer_phone).replace(/\D/g, '') : '') || '9876543210';
+        const cleanWorkerPhone = jobData.worker_phone ? String(jobData.worker_phone).replace(/\D/g, '') : null;
+
+        if (!db) {
+            const job = {
+                id: jobId,
+                customer_id: jobData.customer_id || null,
+                customer_phone: cleanCustomerPhone,
+                customer_name: jobData.customer_name || 'Customer',
+                worker_id: jobData.worker_id || null,
+                worker_phone: cleanWorkerPhone,
+                worker_name: jobData.worker_name || 'Finding nearby specialists...',
+                service: jobData.service || 'Specialist Visit',
+                problem_description: jobData.problem_description || '',
+                location: jobData.location || 'Town Area',
+                city: jobData.city || 'Ramanagara',
+                requested_date: jobData.requested_date || 'Today',
+                requested_time: jobData.requested_time || 'Immediate',
+                budget: jobData.budget || `₹${priceNum}`,
+                final_price: priceNum,
+                status: jobData.status || (jobData.worker_id ? 'Confirmed' : 'Requested'),
+                payment_status: 'Pending',
+                payment_method: jobData.payment_method || 'Cash',
+                created_at: new Date().toISOString()
+            };
+            memoryStore.jobs.unshift(job);
+            FirebaseSync.syncJob(job).catch(e => console.warn('[Firebase Sync Error]:', e));
+            return job;
+        }
+
+        let validCustomerId = null;
+        if (jobData.customer_id) {
+            try {
+                const custRow = db.prepare('SELECT id FROM customers WHERE id = ? OR user_id = ?').get(jobData.customer_id, jobData.customer_id);
+                if (custRow) validCustomerId = custRow.id;
+                else {
+                    const uRow = db.prepare('SELECT id FROM users WHERE id = ?').get(jobData.customer_id);
+                    if (uRow) validCustomerId = uRow.id;
+                }
+            } catch(e){}
+        }
+        if (!validCustomerId && cleanCustomerPhone) {
+            try {
+                const custRow = db.prepare('SELECT id FROM customers WHERE phone = ?').get(cleanCustomerPhone);
+                if (custRow) validCustomerId = custRow.id;
+                else {
+                    const uRow = db.prepare('SELECT id FROM users WHERE phone = ?').get(cleanCustomerPhone);
+                    if (uRow) validCustomerId = uRow.id;
+                }
+            } catch(e){}
+        }
+
+        let validWorkerId = null;
+        if (jobData.worker_id) {
+            try {
+                const wRow = db.prepare('SELECT id FROM workers WHERE id = ?').get(jobData.worker_id);
+                if (wRow) validWorkerId = wRow.id;
+            } catch(e){}
+        } else if (cleanWorkerPhone) {
+            try {
+                const wRow = db.prepare('SELECT id FROM workers WHERE phone = ?').get(cleanWorkerPhone);
+                if (wRow) validWorkerId = wRow.id;
+            } catch(e){}
+        }
+
+        const stmt = db.prepare(`
+            INSERT INTO jobs (
+                id, customer_id, customer_phone, customer_name,
+                worker_id, worker_phone, worker_name,
+                service, problem_description, location, city,
+                requested_date, requested_time, budget, final_price,
+                status, payment_status, payment_method
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+
+        stmt.run(
+            jobId,
+            validCustomerId,
+            cleanCustomerPhone,
+            jobData.customer_name || 'Customer',
+            validWorkerId,
+            cleanWorkerPhone,
+            jobData.worker_name || 'Finding nearby specialists...',
+            jobData.service || 'General Service',
+            jobData.problem_description || '',
+            jobData.location || 'Town Area',
+            jobData.city || 'Ramanagara',
+            jobData.requested_date || 'Today',
+            jobData.requested_time || 'Immediate',
+            jobData.budget || `₹${priceNum}`,
+            priceNum,
+            jobData.status || (validWorkerId ? 'Confirmed' : 'Requested'),
+            'Pending',
+            jobData.payment_method || 'Cash'
+        );
+
+        const created = this.getJobById(jobId);
+        FirebaseSync.syncJob(created).catch(e => console.warn('[Firebase Sync Error]:', e));
+        if (created) emitChange('job', { jobId: created.id, status: created.status, customerPhone: created.customer_phone, workerPhone: created.worker_phone, workerId: created.worker_id, city: created.city });
+        return created;
+    },
+
+    getJobById(id) {
+        if (!db) return memoryStore.jobs.find(j => j.id === id || String(j.id) === String(id)) || null;
+        return db.prepare('SELECT * FROM jobs WHERE id = ?').get(id) || null;
+    },
+
+    getAllJobs(filters = {}) {
+        if (!db) {
+            let jobs = [...memoryStore.jobs];
+            if (filters.status) jobs = jobs.filter(j => j.status === filters.status);
+            if (filters.city) jobs = jobs.filter(j => j.city && j.city.toLowerCase() === filters.city.toLowerCase());
+            return jobs;
+        }
+
+        let query = 'SELECT * FROM jobs WHERE 1=1';
+        const params = [];
+
+        if (filters.status) {
+            query += ' AND status = ?';
+            params.push(filters.status);
+        }
+        if (filters.city) {
+            query += ' AND city = ?';
+            params.push(filters.city);
+        }
+
+        query += ' ORDER BY created_at DESC';
+        return db.prepare(query).all(...params);
+    },
+
+    getJobsByCustomer(customerPhoneOrId) {
+        if (!customerPhoneOrId) return [];
+        if (!db) {
+            const clean = String(customerPhoneOrId).replace(/\D/g, '');
+            return memoryStore.jobs.filter(j => (j.customer_phone || '').replace(/\D/g, '') === clean || String(j.customer_id) === String(customerPhoneOrId));
+        }
+        const clean = String(customerPhoneOrId).replace(/\D/g, '');
+        const idNum = !isNaN(Number(customerPhoneOrId)) ? Number(customerPhoneOrId) : -1;
+        return db.prepare("SELECT * FROM jobs WHERE (customer_phone IS NOT NULL AND (customer_phone = ? OR REPLACE(REPLACE(REPLACE(customer_phone, ' ', ''), '-', ''), '+91', '') = ?)) OR (customer_id IS NOT NULL AND customer_id = ?) ORDER BY created_at DESC").all(clean, clean, idNum);
+    },
+
+    getJobsByWorker(workerIdOrPhone) {
+        if (!workerIdOrPhone) return [];
+        if (!db) {
+            const clean = String(workerIdOrPhone).replace(/\D/g, '');
+            return memoryStore.jobs.filter(j => j.worker_phone === clean || String(j.worker_id) === String(workerIdOrPhone));
+        }
+        const cleanPhone = String(workerIdOrPhone).replace(/\D/g, '');
+        if (cleanPhone.length >= 10) {
+            const w = this.getWorkerByPhone(cleanPhone);
+            if (w) {
+                return db.prepare('SELECT * FROM jobs WHERE worker_phone = ? OR worker_id = ? ORDER BY created_at DESC').all(cleanPhone, w.id);
+            }
+            return db.prepare('SELECT * FROM jobs WHERE worker_phone = ? ORDER BY created_at DESC').all(cleanPhone);
+        }
+        if (typeof workerIdOrPhone === 'number' || (!isNaN(Number(workerIdOrPhone)) && Number(workerIdOrPhone) < 1000000)) {
+            return db.prepare('SELECT * FROM jobs WHERE worker_id = ? ORDER BY created_at DESC').all(Number(workerIdOrPhone));
+        }
+        return db.prepare('SELECT * FROM jobs WHERE worker_phone = ? ORDER BY created_at DESC').all(String(workerIdOrPhone));
+    },
+
+    getAvailableJobsForWorker(trade, city = 'Ramanagara') {
+        if (!db) {
+            const tLower = (trade || '').toLowerCase();
+            return memoryStore.jobs.filter(j => j.status === 'Requested' && ((j.service && j.service.toLowerCase().includes(tLower)) || (j.problem_description && j.problem_description.toLowerCase().includes(tLower))));
+        }
+        return db.prepare(`
+            SELECT * FROM jobs
+            WHERE status = 'Requested'
+              AND (service LIKE ? OR ? LIKE '%' || service || '%')
+              AND city = ?
+            ORDER BY created_at DESC
+        `).all(`%${trade}%`, trade, city);
+    },
+
+    updateJobStatus(jobId, status, workerId = null, workerName = null, workerPhone = null) {
+        const job = this.getJobById(jobId);
+        if (!job) return null;
+
+        if (!db) {
+            job.status = status;
+            if (workerId) {
+                job.worker_id = workerId;
+                job.worker_name = workerName || 'Worker';
+                job.worker_phone = workerPhone || '';
+            }
+            if (status === 'Completed') {
+                job.completed_at = new Date().toISOString();
+                job.payment_status = 'Paid';
+                if (job.worker_id) {
+                    const w = this.getWorkerById(job.worker_id);
+                    if (w) w.jobs_completed = (w.jobs_completed || 0) + 1;
+                }
+            }
+            FirebaseSync.syncJob(job).catch(e => console.warn('[Firebase Sync Error]:', e));
+            emitChange('job', { jobId: job.id, status: job.status, customerPhone: job.customer_phone, workerPhone: job.worker_phone, workerId: job.worker_id, city: job.city });
+            return job;
+        }
+
+        const fields = ['status = ?'];
+        const params = [status];
+
+        if (workerId) {
+            fields.push('worker_id = ?', 'worker_name = ?', 'worker_phone = ?');
+            params.push(workerId, workerName || 'Worker', workerPhone || '');
+        }
+
+        if (status === 'Completed') {
+            fields.push("completed_at = CURRENT_TIMESTAMP", "payment_status = 'Paid'");
+            if (job.worker_id) {
+                db.prepare('UPDATE workers SET jobs_completed = jobs_completed + 1 WHERE id = ?').run(job.worker_id);
+            }
+        }
+
+        params.push(jobId);
+        db.prepare(`UPDATE jobs SET ${fields.join(', ')} WHERE id = ?`).run(...params);
+        const updated = this.getJobById(jobId);
+        FirebaseSync.syncJob(updated).catch(e => console.warn('[Firebase Sync Error]:', e));
+        if (updated) emitChange('job', { jobId: updated.id, status: updated.status, customerPhone: updated.customer_phone, workerPhone: updated.worker_phone, workerId: updated.worker_id, city: updated.city });
+        return updated;
+    },
+
+    submitJobReview(jobId, rating, review) {
+        const job = this.getJobById(jobId);
+        if (!job) return null;
+
+        if (!db) {
+            job.rating = rating;
+            job.review = review;
+            FirebaseSync.syncJob(job).catch(e => console.warn('[Firebase Sync Error]:', e));
+            return job;
+        }
+
+        db.prepare('UPDATE jobs SET rating = ?, review = ? WHERE id = ?').run(rating, review, jobId);
+
+        if (job.worker_id) {
+            const avgRow = db.prepare('SELECT AVG(rating) as avg_rating FROM jobs WHERE worker_id = ? AND rating IS NOT NULL').get(job.worker_id);
+            if (avgRow && avgRow.avg_rating) {
+                const rounded = Math.round(avgRow.avg_rating * 10) / 10;
+                db.prepare('UPDATE workers SET rating = ? WHERE id = ?').run(rounded, job.worker_id);
+            }
+        }
+
+        const updated = this.getJobById(jobId);
+        FirebaseSync.syncJob(updated).catch(e => console.warn('[Firebase Sync Error]:', e));
+        return updated;
+    },
+
+    // ---------------- EARNINGS & DIGITAL WORK RECORD ----------------
+    getWorkerEarnings(workerIdOrPhone) {
+        let worker = null;
+        if (typeof workerIdOrPhone === 'string' && workerIdOrPhone.length >= 10) {
+            worker = this.getWorkerByPhone(workerIdOrPhone);
+        } else if (typeof workerIdOrPhone === 'number') {
+            worker = this.getWorkerById(workerIdOrPhone);
+        } else if (!isNaN(Number(workerIdOrPhone)) && String(workerIdOrPhone).length < 10) {
+            worker = this.getWorkerById(Number(workerIdOrPhone));
+        } else {
+            worker = this.getWorkerByPhone(workerIdOrPhone);
+        }
+
+        const wId = worker ? worker.id : (typeof workerIdOrPhone === 'number' ? workerIdOrPhone : -1);
+        const phone = worker ? worker.phone : String(workerIdOrPhone).replace(/\D/g, '');
+
+        if (!db) {
+            const completedJobs = memoryStore.jobs.filter(j => (j.worker_phone === phone || (wId && j.worker_id === wId)) && j.status === 'Completed');
+            const total = completedJobs.reduce((sum, j) => sum + (j.final_price || 300), 0);
+            return {
+                today: total,
+                thisMonth: total,
+                totalEarnings: total,
+                totalCompletedJobs: completedJobs.length,
+                pendingEarnings: 0,
+                completedJobs
+            };
+        }
+
+        const totalRow = db.prepare(`
+            SELECT COALESCE(SUM(COALESCE(final_price, CAST(REPLACE(REPLACE(budget, '₹', ''), ' ', '') AS INTEGER), 300)), 0) as total, COUNT(*) as count
+            FROM jobs
+            WHERE (worker_id = ? OR worker_phone = ?) AND status = 'Completed'
+        `).get(wId, phone);
+
+        const todayRow = db.prepare(`
+            SELECT COALESCE(SUM(COALESCE(final_price, CAST(REPLACE(REPLACE(budget, '₹', ''), ' ', '') AS INTEGER), 300)), 0) as today
+            FROM jobs
+            WHERE (worker_id = ? OR worker_phone = ?) AND status = 'Completed' AND date(completed_at) = date('now')
+        `).get(wId, phone);
+
+        const monthRow = db.prepare(`
+            SELECT COALESCE(SUM(COALESCE(final_price, CAST(REPLACE(REPLACE(budget, '₹', ''), ' ', '') AS INTEGER), 300)), 0) as month
+            FROM jobs
+            WHERE (worker_id = ? OR worker_phone = ?) AND status = 'Completed' AND strftime('%Y-%m', completed_at) = strftime('%Y-%m', 'now')
+        `).get(wId, phone);
+
+        const pendingRow = db.prepare(`
+            SELECT COALESCE(SUM(COALESCE(final_price, CAST(REPLACE(REPLACE(budget, '₹', ''), ' ', '') AS INTEGER), 300)), 0) as pending
+            FROM jobs
+            WHERE (worker_id = ? OR worker_phone = ?) AND status IN ('Accepted', 'On the Way', 'In Progress')
+        `).get(wId, phone);
+
+        const completedJobs = db.prepare(`
+            SELECT id, service, customer_name, location, requested_date, final_price, completed_at, payment_status, payment_method, rating
+            FROM jobs
+            WHERE (worker_id = ? OR worker_phone = ?) AND status = 'Completed'
+            ORDER BY completed_at DESC
+        `).all(wId, phone);
+
+        return {
+            today: todayRow?.today || 0,
+            thisMonth: monthRow?.month || 0,
+            totalEarnings: totalRow?.total || 0,
+            totalCompletedJobs: totalRow?.count || 0,
+            pendingEarnings: pendingRow?.pending || 0,
+            completedJobs
+        };
+    },
+
+    getWorkerEarningsSummary(workerIdOrPhone) {
+        return this.getWorkerEarnings(workerIdOrPhone);
+    },
+
+    // ---------------- CALL LOGS (TELEPHONY / VOICE) ----------------
+    logCall({ callerPhone, callerRole = 'customer', transcript, intentDetected, actionsTaken, durationSeconds = 15 }) {
+        const clean = (callerPhone || 'anonymous').replace(/\D/g, '') || 'anonymous';
+        if (!db) {
+            const entry = {
+                id: memoryStore.callLogs.length + 1,
+                caller_phone: clean,
+                caller_role: callerRole,
+                transcript,
+                intent_detected: intentDetected || 'general_query',
+                actions_taken: actionsTaken || 'none',
+                duration_seconds: durationSeconds,
+                timestamp: new Date().toISOString()
+            };
+            memoryStore.callLogs.unshift(entry);
+            return entry;
+        }
+        const stmt = db.prepare(`
+            INSERT INTO call_logs (caller_phone, caller_role, transcript, intent_detected, actions_taken, duration_seconds)
+            VALUES (?, ?, ?, ?, ?, ?)
+        `);
+        const res = stmt.run(clean, callerRole, transcript, intentDetected || 'general_query', actionsTaken || 'none', durationSeconds);
+        return db.prepare('SELECT * FROM call_logs WHERE id = ?').get(Number(res.lastInsertRowid));
+    },
+
+    getAllCallLogs() {
+        if (!db) return [...memoryStore.callLogs];
+        return db.prepare('SELECT * FROM call_logs ORDER BY timestamp DESC LIMIT 50').all();
+    },
+
+    // ---------------- VOICE SESSIONS (SERVERLESS MULTI-TURN PERSISTENCE) ----------------
+    getVoiceSession(sessionId) {
+        if (!sessionId) return null;
+        if (db) {
+            try {
+                const stmt = db.prepare('SELECT data FROM voice_sessions WHERE session_id = ?');
+                const row = stmt.get(sessionId);
+                if (row && row.data) {
+                    return JSON.parse(row.data);
+                }
+            } catch (e) {}
+        }
+        return memoryStore.voice_sessions?.[sessionId] || null;
+    },
+
+    saveVoiceSession(sessionId, data) {
+        if (!sessionId || !data) return;
+        const jsonStr = JSON.stringify(data);
+        if (db) {
+            try {
+                const stmt = db.prepare(`
+                    INSERT INTO voice_sessions (session_id, data, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(session_id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at
+                `);
+                stmt.run(sessionId, jsonStr, Date.now());
+            } catch (e) {}
+        }
+        if (!memoryStore.voice_sessions) memoryStore.voice_sessions = {};
+        memoryStore.voice_sessions[sessionId] = data;
+    },
+
+    deleteVoiceSession(sessionId) {
+        if (!sessionId) return;
+        if (db) {
+            try {
+                db.prepare('DELETE FROM voice_sessions WHERE session_id = ?').run(sessionId);
+            } catch (e) {}
+        }
+        if (memoryStore.voice_sessions) {
+            delete memoryStore.voice_sessions[sessionId];
+        }
+    },
+
+    // Clear ALL application data for clean production reset
+    clearAllApplicationData() {
+        if (db) {
+            const tablesToClear = ['workers', 'worker_availability', 'jobs', 'customers', 'call_logs', 'voice_sessions'];
+            for (const tbl of tablesToClear) {
+                try { db.prepare(`DELETE FROM ${tbl}`).run(); } catch(e){}
+            }
+            try { db.prepare(`DELETE FROM users WHERE role <> 'admin'`).run(); } catch(e){}
+            try { db.exec('VACUUM'); } catch(e){}
+        }
+        memoryStore.workers = [];
+        memoryStore.availability = {};
+        memoryStore.jobs = [];
+        memoryStore.customers = [];
+        memoryStore.reviews = [];
+        memoryStore.callLogs = [];
+        memoryStore.voice_sessions = {};
+        memoryStore.users = memoryStore.users.filter(u => u.role === 'admin');
+
+        FirebaseSync.clearAllData().catch(e => console.warn('[Firebase Clear Error]:', e));
+        emitChange('worker', { action: 'CLEARED' });
+        emitChange('job', { action: 'CLEARED' });
+        emitChange('availability', { action: 'CLEARED' });
+
+        return { success: true, message: 'Clean production dataset ready. Zero workers, zero jobs.' };
+    },
+
+    // Trigger complete sync of all SQLite records to Firebase
+    async triggerFullFirebaseSync() {
+        const allWorkers = this.getAllWorkers();
+        const allJobs = this.getAllJobs();
+        const results = { workersSynced: 0, jobsSynced: 0 };
+
+        for (const w of allWorkers) {
+            await FirebaseSync.syncWorker(w);
+            results.workersSynced++;
+        }
+        for (const j of allJobs) {
+            await FirebaseSync.syncJob(j);
+            results.jobsSynced++;
+        }
+        return results;
+    }
+};
+
+module.exports = DB;

@@ -1,0 +1,1104 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GigSync | Simple, Minimal & Modern Hyperlocal Work Marketplace</title>
+    <meta name="description" content="GigSync connects local customers with skilled trade professionals in Tier-2 and Tier-3 cities with AI-powered simplicity.">
+    
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    
+    <!-- Styles -->
+    <link rel="stylesheet" href="styles.css">
+</head>
+
+<body>
+
+    <div id="appContainer" class="app-layout">
+
+        <!-- ==================================================================
+             0. GATEWAY & AUTHENTICATION (DEFAULT ENTRY SCREEN)
+             ================================================================== -->
+        <section id="gatewayPortal" class="portal-container active">
+            <div class="gateway-wrap">
+                <!-- Branding Card -->
+                <div class="gateway-brand-hero">
+                    <div class="brand-logo-badge">G</div>
+                    <h1 class="brand-title">Gig<span>Sync</span></h1>
+                    <p class="brand-tagline">Local skills. Local jobs. Powered by AI.</p>
+                </div>
+
+                <!-- Auth Container -->
+                <div class="gateway-auth-card">
+                    <!-- 3-Role Picker: Customer, Worker, Voice Terminal -->
+                    <div class="role-selector-pill" id="gatewayRolePicker">
+                        <label class="role-option active" id="gRoleCardCustomer">
+                            <input type="radio" name="gatewayRole" value="customer" checked>
+                            <i class="fa-solid fa-user"></i>
+                            <span>Customer</span>
+                        </label>
+                        <label class="role-option" id="gRoleCardWorker">
+                            <input type="radio" name="gatewayRole" value="worker">
+                            <i class="fa-solid fa-hammer"></i>
+                            <span>Worker</span>
+                        </label>
+                        <label class="role-option" id="gRoleCardTerminal">
+                            <input type="radio" name="gatewayRole" value="terminal">
+                            <i class="fa-solid fa-headset"></i>
+                            <span>Voice Terminal</span>
+                        </label>
+                    </div>
+
+                    <!-- Auth Mode Tabs (Sign In vs Create Account) -->
+                    <div class="auth-tabs-row" id="authTabsRow">
+                        <button type="button" class="auth-tab-btn active" id="gTabLogin">Sign In</button>
+                        <button type="button" class="auth-tab-btn" id="gTabRegister">Create Account</button>
+                    </div>
+
+                    <!-- Auth Form -->
+                    <form id="gatewayAuthForm" class="auth-form">
+                        <!-- Full Name (Register Only) -->
+                        <div class="form-field hidden" id="gNameGroup">
+                            <label class="field-label" for="gNameInput">Full Name</label>
+                            <input type="text" id="gNameInput" class="field-input" placeholder="e.g. Ramesh Kumar / Kavya Rao">
+                        </div>
+
+                        <!-- Mobile Number -->
+                        <div class="form-field" id="gPhoneGroup">
+                            <label class="field-label" for="gPhoneInput">Mobile Number</label>
+                            <div class="phone-input-wrap">
+                                <span class="phone-code">🇮🇳 +91</span>
+                                <input type="tel" id="gPhoneInput" class="field-input" placeholder="e.g. 9876543210">
+                            </div>
+                        </div>
+
+                        <!-- Password -->
+                        <div class="form-field" id="gPasswordGroup">
+                            <label class="field-label" for="gPasswordInput">Password</label>
+                            <input type="password" id="gPasswordInput" class="field-input" placeholder="Enter password">
+                        </div>
+
+                        <!-- Worker Profession Fields (Register Only) -->
+                        <div id="gWorkerExtraFields" class="hidden">
+                            <div class="form-field">
+                                <label class="field-label" for="gWorkerTradeSelect">Profession / Trade</label>
+                                <select id="gWorkerTradeSelect" class="field-input">
+                                    <option value="Master Electrician">⚡ Electrician</option>
+                                    <option value="Plumbing Specialist">🔧 Plumber</option>
+                                    <option value="General Carpenter">🔨 Carpenter</option>
+                                    <option value="Two-Wheeler Mechanic">🏍️ Two-Wheeler Mechanic</option>
+                                    <option value="AC & Fridge Tech">❄️ AC &amp; Fridge Tech</option>
+                                    <option value="Appliance Repair Tech">🔌 Appliance Tech</option>
+                                    <option value="Painter">🎨 Painter</option>
+                                    <option value="Tailor">🧵 Tailor</option>
+                                    <option value="Home Cleaner">🧹 Cleaner</option>
+                                </select>
+                            </div>
+                            <div class="form-field">
+                                <label class="field-label" for="gWorkerPriceInput">Standard Visiting Fee (₹)</label>
+                                <input type="number" id="gWorkerPriceInput" class="field-input" value="300">
+                            </div>
+                        </div>
+
+                        <!-- Master Terminal Passcode (Voice Terminal Only) -->
+                        <div id="gTerminalSecretGroup" class="hidden">
+                            <div class="form-field">
+                                <label class="field-label" for="gTerminalSecretInput" style="color:var(--gs-primary);font-weight:600">
+                                    <i class="fa-solid fa-key"></i> Terminal Security Key
+                                </label>
+                                <input type="password" id="gTerminalSecretInput" class="field-input" placeholder="Enter operator password">
+                                <small class="field-hint">Operator mobile goes in the Mobile Number field above. Default admin: 9999999999 / admin@gigsync2026</small>
+                            </div>
+                        </div>
+
+                        <!-- City Selection -->
+                        <div class="form-field" id="gCityGroup">
+                            <label class="field-label" for="gCitySelect">City / Town</label>
+                            <select id="gCitySelect" class="field-input">
+                                <option value="Ramanagara">Ramanagara (Karnataka)</option>
+                                <option value="Chitradurga">Chitradurga (Karnataka)</option>
+                                <option value="Mandya">Mandya (Karnataka)</option>
+                                <option value="Hassan">Hassan (Karnataka)</option>
+                                <option value="Tumakuru">Tumakuru (Karnataka)</option>
+                                <option value="Shivamogga">Shivamogga (Karnataka)</option>
+                                <option value="Davangere">Davangere (Karnataka)</option>
+                                <option value="Belagavi">Belagavi (Karnataka)</option>
+                                <option value="Hubballi">Hubballi (Karnataka)</option>
+                                <option value="Kannur">Kannur (Kerala)</option>
+                                <option value="Kasaragod">Kasaragod (Kerala)</option>
+                            </select>
+                        </div>
+
+                        <p id="gAuthError" class="auth-error-msg hidden"></p>
+
+                        <button type="submit" class="btn btn-primary btn-block" id="gAuthSubmitBtn">
+                            Sign In
+                        </button>
+                    </form>
+
+                    <!-- Guest Mode Option -->
+                    <button type="button" class="btn-guest-link" id="continueGuestBtn">
+                        Or Explore Marketplace as Guest Customer <i class="fa-solid fa-arrow-right"></i>
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <!-- ==================================================================
+             1. CUSTOMER PORTAL (SIMPLE, MINIMAL, PURPOSE-BUILT)
+             ================================================================== -->
+        <section id="customerPortal" class="portal-container">
+            <!-- Header Bar -->
+            <header class="app-header">
+                <div class="header-inner">
+                    <!-- Top Left: Location -->
+                    <div class="header-location">
+                        <button type="button" class="location-btn" id="openLocationModalBtn" title="Change Location">
+                            <i class="fa-solid fa-location-dot"></i>
+                            <span id="activeCityLabel">Ramanagara</span>
+                            <i class="fa-solid fa-chevron-down arrow-icon"></i>
+                        </button>
+                    </div>
+
+                    <!-- Desktop Navigation Links -->
+                    <nav class="desktop-nav-menu">
+                        <button type="button" class="nav-link active" data-cust-view="home" id="custNavHome">
+                            <i class="fa-solid fa-house"></i> Home
+                        </button>
+                        <button type="button" class="nav-link" data-cust-view="bookings" id="custNavBookings">
+                            <i class="fa-solid fa-calendar-check"></i> My Bookings
+                            <span class="badge-dot hidden" id="custBookingsBadge"></span>
+                        </button>
+                        <button type="button" class="nav-link nav-highlight" id="custNavPostJob">
+                            <i class="fa-solid fa-plus"></i> Post Job
+                        </button>
+                    </nav>
+
+                    <!-- Top Right: Profile -->
+                    <div class="header-profile">
+                        <button type="button" class="profile-btn" id="userMenuBtn" title="User Profile">
+                            <div class="avatar-circle" id="userInitials">KR</div>
+                            <span class="profile-name" id="userDisplayName">Customer</span>
+                            <i class="fa-solid fa-chevron-down arrow-icon"></i>
+                        </button>
+                        <div class="dropdown-menu hidden" id="userDropdownMenu">
+                            <div class="dropdown-header">
+                                <strong id="dropdownUserName">User</strong>
+                                <span id="dropdownUserRole">Customer</span>
+                            </div>
+                            <hr class="divider">
+                            <button type="button" class="dropdown-item" id="custProfileBtn"><i class="fa-solid fa-user-circle"></i> My Profile</button>
+                            <button type="button" class="dropdown-item" id="switchPortalBtn"><i class="fa-solid fa-hammer"></i> Switch to Worker</button>
+                            <button type="button" class="dropdown-item" id="dropdownTerminalBtn"><i class="fa-solid fa-headset"></i> Voice Terminal</button>
+                            <hr class="divider">
+                            <button type="button" class="dropdown-item logout" id="dropdownLogoutBtn"><i class="fa-solid fa-right-from-bracket"></i> Logout</button>
+                        </div>
+                    </div>
+                </div>
+            </header>
+
+            <!-- Customer Main Views -->
+            <main class="main-body">
+
+                <!-- 1.1 CUSTOMER HOME VIEW -->
+                <div class="customer-view active" id="custView-home">
+                    <!-- Search + Voice + Post Action Hub -->
+                    <div class="search-action-hub">
+                        <div class="search-bar-wrap">
+                            <i class="fa-solid fa-magnifying-glass search-icon"></i>
+                            <input type="text" id="homeSearchInput" class="search-input" placeholder="What do you need help with? (e.g. Electrician, plumber, mechanic...)" autocomplete="off">
+                            <div class="search-inline-actions">
+                                <button type="button" class="btn-voice-pill" id="homeTalkAiActionBtn" title="Talk to GigSync in Kannada / English">
+                                    <i class="fa-solid fa-microphone"></i> <span>Talk to GigSync</span>
+                                </button>
+                                <button type="button" class="btn-plus-icon" id="homePostJobBtn" title="Post a Job">
+                                    <i class="fa-solid fa-plus"></i>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Active / Upcoming Bookings Section -->
+                    <div class="content-section" id="custActiveBookingsSection">
+                        <div class="section-title-row">
+                            <h2>Active &amp; Upcoming Bookings</h2>
+                            <button type="button" class="btn-text-link" id="viewAllCustBookingsLink">View All</button>
+                        </div>
+                        <div class="bookings-compact-list" id="custActiveBookingsList">
+                            <!-- Populated dynamically from SQLite DB -->
+                            <div class="empty-placeholder">
+                                <p>No bookings yet.</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Available Nearby Specialists Section (Real Data Only) -->
+                    <div class="content-section">
+                        <div class="section-title-row">
+                            <div>
+                                <h2>Available Specialists</h2>
+                                <p class="section-subtext">Verified local professionals on-duty in <span class="text-city-dynamic">Ramanagara</span></p>
+                            </div>
+                            <div style="display:flex;gap:8px;align-items:center">
+                                <button type="button" class="btn btn-outline btn-sm" id="openCalendarBookingBtn">
+                                    <i class="fa-solid fa-calendar-days"></i> Book by Date
+                                </button>
+                                <button type="button" class="btn-text-link" id="refreshCustWorkersBtn"><i class="fa-solid fa-rotate"></i> Refresh</button>
+                            </div>
+                        </div>
+
+
+                        <div class="workers-card-grid" id="custWorkersGrid">
+                            <!-- Populated dynamically from SQLite DB -->
+                            <div class="empty-placeholder">
+                                <p>No workers available in your area yet.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 1.2 CUSTOMER MY BOOKINGS VIEW -->
+                <div class="customer-view" id="custView-bookings">
+                    <div class="view-header">
+                        <h2>My Bookings</h2>
+                        <p class="view-subtext">Track service requests and booking history.</p>
+                    </div>
+
+                    <!-- Filter Tabs: All, Upcoming, Active, Completed, Cancelled -->
+                    <div class="filter-pills-row" id="custBookingsFilterTabs">
+                        <button type="button" class="filter-pill active" data-filter="all">All</button>
+                        <button type="button" class="filter-pill" data-filter="upcoming">Upcoming</button>
+                        <button type="button" class="filter-pill" data-filter="active">Active</button>
+                        <button type="button" class="filter-pill" data-filter="completed">Completed</button>
+                        <button type="button" class="filter-pill" data-filter="cancelled">Cancelled</button>
+                    </div>
+
+                    <div class="bookings-full-list" id="custFullBookingsList">
+                        <!-- Populated from SQLite DB -->
+                        <div class="empty-placeholder">
+                            <p>No bookings yet.</p>
+                        </div>
+                    </div>
+                </div>
+
+            </main>
+
+            <!-- Customer Mobile Bottom Navigation Bar -->
+            <nav class="mobile-bottom-nav">
+                <button type="button" class="bottom-nav-item active" data-cust-view="home" id="mCustNavHome">
+                    <i class="fa-solid fa-house"></i>
+                    <span>Home</span>
+                </button>
+                <button type="button" class="bottom-nav-item" data-cust-view="bookings" id="mCustNavBookings">
+                    <i class="fa-solid fa-calendar-check"></i>
+                    <span>My Bookings</span>
+                </button>
+                <button type="button" class="bottom-nav-item highlight-btn" id="mCustNavPostJob">
+                    <i class="fa-solid fa-plus"></i>
+                    <span>Post Job</span>
+                </button>
+            </nav>
+        </section>
+
+        <!-- ==================================================================
+             2. WORKER PORTAL (PURPOSE-BUILT FOR WORKERS)
+             ================================================================== -->
+        <section id="workerPortal" class="portal-container">
+            <!-- Header Bar -->
+            <header class="app-header">
+                <div class="header-inner">
+                    <!-- Top Left: Work Location -->
+                    <div class="header-location">
+                        <button type="button" class="location-btn" id="workerLocationBtn" title="Current Work Location">
+                            <i class="fa-solid fa-location-dot"></i>
+                            <span class="text-city-dynamic">Ramanagara</span>
+                            <i class="fa-solid fa-chevron-down arrow-icon"></i>
+                        </button>
+                    </div>
+
+                    <!-- Desktop Navigation Links -->
+                    <nav class="desktop-nav-menu">
+                        <button type="button" class="nav-link active" data-worker-view="home" id="wNavHome">
+                            <i class="fa-solid fa-house"></i> Home
+                        </button>
+                        <button type="button" class="nav-link" data-worker-view="bookings" id="wNavBookings">
+                            <i class="fa-solid fa-calendar-days"></i> Bookings
+                        </button>
+                        <button type="button" class="nav-link" data-worker-view="earnings" id="wNavEarnings">
+                            <i class="fa-solid fa-chart-simple"></i> Job History &amp; Earnings
+                        </button>
+                    </nav>
+
+                    <!-- Top Right: Profile -->
+                    <div class="header-profile">
+                        <button type="button" class="profile-btn" id="workerProfileMenuBtn" title="Worker Profile">
+                            <div class="avatar-circle worker-avatar" id="workerInitials">RM</div>
+                            <span class="profile-name" id="workerDisplayName">Rumais</span>
+                            <i class="fa-solid fa-chevron-down arrow-icon"></i>
+                        </button>
+                        <div class="dropdown-menu hidden" id="workerDropdownMenu">
+                            <div class="dropdown-header">
+                                <strong id="wDropdownName">Rumais</strong>
+                                <span id="wDropdownTrade">Electrician</span>
+                            </div>
+                            <hr class="divider">
+                            <button type="button" class="dropdown-item" id="workerSwitchCustBtn"><i class="fa-solid fa-user"></i> Switch to Customer</button>
+                            <button type="button" class="dropdown-item" id="wDropdownTerminalBtn"><i class="fa-solid fa-headset"></i> Voice Terminal</button>
+                            <hr class="divider">
+                            <button type="button" class="dropdown-item logout" id="workerLogoutBtn"><i class="fa-solid fa-right-from-bracket"></i> Logout</button>
+                        </div>
+                    </div>
+                </div>
+            </header>
+
+            <!-- Worker Main Views -->
+            <main class="main-body">
+
+                <!-- 2.1 WORKER HOME VIEW -->
+                <div class="worker-view active" id="workerView-home">
+                    <!-- Status & Profession Banner -->
+                    <div class="worker-hero-card">
+                        <div class="worker-status-col">
+                            <span class="status-kicker">WORKER STATUS</span>
+                            <button type="button" class="duty-toggle-btn on" id="workerDutyToggleBtn">
+                                <span class="status-indicator"></span>
+                                <strong id="dutyStatusLabel">ACTIVE</strong>
+                            </button>
+                        </div>
+
+                        <div class="worker-trade-col">
+                            <span class="status-kicker">WHAT DO YOU DO?</span>
+                            <div class="trade-display-row">
+                                <h2 id="workerTradeHeading">⚡ Master Electrician</h2>
+                                <button type="button" class="btn-icon-link" id="editWorkerTradeBtn" title="Edit Profession"><i class="fa-solid fa-pen"></i></button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Worker Voice Assistant Hub -->
+                    <div class="content-section" style="margin-top: 12px;">
+                        <div class="worker-voice-hero" style="background: linear-gradient(135deg, #1E293B, #0F172A); border-radius: 12px; padding: 16px 20px; display: flex; align-items: center; justify-content: space-between; gap: 16px; color: #fff; box-shadow: 0 4px 14px rgba(0,0,0,0.15);">
+                            <div style="display: flex; align-items: center; gap: 14px;">
+                                <div style="width: 44px; height: 44px; border-radius: 50%; background: rgba(59, 130, 246, 0.2); border: 1.5px solid #3B82F6; display: flex; align-items: center; justify-content: center; font-size: 20px; color: #60A5FA;">
+                                    <i class="fa-solid fa-microphone"></i>
+                                </div>
+                                <div>
+                                    <h3 style="margin: 0; font-size: 15px; font-weight: 700; color: #F8FAFC;">Voice Assistant (ಮಾತನಾಡಿ / Speak)</h3>
+                                    <p style="margin: 2px 0 0 0; font-size: 12px; color: #94A3B8;">Check your bookings, update hours, or ask anything by voice.</p>
+                                </div>
+                            </div>
+                            <button type="button" class="btn btn-primary" id="workerTalkAiActionBtn" style="white-space: nowrap; font-weight: 600;">
+                                <i class="fa-solid fa-microphone-lines"></i> Talk to AI
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Current Availability Today Card -->
+                    <div class="content-section">
+                        <div class="availability-display-card">
+                            <div class="avail-text-col">
+                                <span class="status-kicker">CURRENT AVAILABILITY TODAY</span>
+                                <h3 id="workerTodayHoursLabel">9:00 AM – 6:00 PM</h3>
+                                <span class="avail-badge available" id="workerAvailBadge">🟢 Available</span>
+                            </div>
+                            <button type="button" class="btn btn-outline" id="openEditAvailModalBtn">
+                                <i class="fa-solid fa-clock"></i> Edit Availability
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Current Booking -->
+                    <div class="content-section">
+                        <div class="section-title-row">
+                            <h2>Current Booking</h2>
+                        </div>
+                        <div id="workerCurrentBookingContainer">
+                            <div class="empty-placeholder">
+                                <p>No bookings yet.</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Upcoming Bookings -->
+                    <div class="content-section">
+                        <div class="section-title-row">
+                            <h2>Upcoming Bookings</h2>
+                        </div>
+                        <div class="bookings-compact-list" id="workerUpcomingBookingsList">
+                            <div class="empty-placeholder">
+                                <p>No bookings yet.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 2.2 WORKER BOOKINGS VIEW -->
+                <div class="worker-view" id="workerView-bookings">
+                    <div class="view-header">
+                        <h2>Bookings Schedule</h2>
+                        <p class="view-subtext">Manage current, upcoming, and completed jobs.</p>
+                    </div>
+
+                    <div class="filter-pills-row" id="workerBookingsFilterTabs">
+                        <button type="button" class="filter-pill active" data-filter="all">All</button>
+                        <button type="button" class="filter-pill" data-filter="current">Current</button>
+                        <button type="button" class="filter-pill" data-filter="upcoming">Upcoming</button>
+                        <button type="button" class="filter-pill" data-filter="completed">Completed</button>
+                        <button type="button" class="filter-pill" data-filter="cancelled">Cancelled</button>
+                    </div>
+
+                    <div class="bookings-full-list" id="workerAllBookingsList">
+                        <div class="empty-placeholder">
+                            <p>No bookings yet.</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 2.3 WORKER JOB HISTORY & EARNINGS VIEW -->
+                <div class="worker-view" id="workerView-earnings">
+                    <div class="view-header">
+                        <h2>Job History &amp; Earnings</h2>
+                        <p class="view-subtext">Real earnings calculated directly from completed jobs.</p>
+                    </div>
+
+                    <!-- 4 Summary Metric Cards -->
+                    <div class="metrics-grid">
+                        <div class="metric-card">
+                            <span class="metric-label">Completed Jobs</span>
+                            <strong class="metric-val" id="metricCompletedJobs">0</strong>
+                        </div>
+                        <div class="metric-card">
+                            <span class="metric-label">Total Earnings</span>
+                            <strong class="metric-val text-green" id="metricTotalEarnings">₹0</strong>
+                        </div>
+                        <div class="metric-card">
+                            <span class="metric-label">This Month</span>
+                            <strong class="metric-val" id="metricMonthEarnings">₹0</strong>
+                        </div>
+                        <div class="metric-card">
+                            <span class="metric-label">Pending Payments</span>
+                            <strong class="metric-val" id="metricPendingEarnings">₹0</strong>
+                        </div>
+                    </div>
+
+                    <!-- Completed Jobs Record Table -->
+                    <div class="content-section" style="margin-top:24px">
+                        <div class="section-title-row">
+                            <h3>Completed Gigs Record</h3>
+                        </div>
+                        <div class="table-container">
+                            <table class="clean-table">
+                                <thead>
+                                    <tr>
+                                        <th>Job</th>
+                                        <th>Customer</th>
+                                        <th>Amount</th>
+                                        <th>Date</th>
+                                        <th>Status</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="workerEarningsTableBody">
+                                    <!-- Populated from SQLite DB -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+            </main>
+
+            <!-- Worker Mobile Bottom Navigation Bar -->
+            <nav class="mobile-bottom-nav">
+                <button type="button" class="bottom-nav-item active" data-worker-view="home" id="mWNavHome">
+                    <i class="fa-solid fa-house"></i>
+                    <span>Home</span>
+                </button>
+                <button type="button" class="bottom-nav-item" data-worker-view="bookings" id="mWNavBookings">
+                    <i class="fa-solid fa-calendar-days"></i>
+                    <span>Bookings</span>
+                </button>
+                <button type="button" class="bottom-nav-item" data-worker-view="earnings" id="mWNavEarnings">
+                    <i class="fa-solid fa-chart-simple"></i>
+                    <span>Earnings</span>
+                </button>
+            </nav>
+        </section>
+
+        <!-- ==================================================================
+             3. VOICE AGENT / 3.5MM TERMINAL (DEDICATED MINIMAL INTERFACE)
+             ================================================================== -->
+        <section id="voiceTerminalPortal" class="portal-container">
+            <header class="app-header terminal-header">
+                <div class="header-inner">
+                    <div class="terminal-title-wrap">
+                        <div class="brand-logo-badge terminal-badge">G</div>
+                        <div>
+                            <h1 class="terminal-heading">GigSync Voice Agent</h1>
+                            <p class="terminal-sub">Telephony &amp; 3.5mm Hardware Processing Terminal</p>
+                        </div>
+                    </div>
+
+                    <div class="terminal-header-actions">
+                        <button type="button" class="btn btn-outline btn-sm" id="terminalSwitchCustBtn">
+                            <i class="fa-solid fa-user"></i> Customer
+                        </button>
+                        <button type="button" class="btn btn-outline btn-sm" id="terminalSwitchWorkerBtn">
+                            <i class="fa-solid fa-hammer"></i> Worker
+                        </button>
+                        <button type="button" class="btn btn-danger-ghost btn-sm" id="terminalLogoutBtn">
+                            <i class="fa-solid fa-right-from-bracket"></i> Logout
+                        </button>
+                    </div>
+                </div>
+            </header>
+
+            <main class="main-body terminal-body">
+                <!-- Hardware Status & Output Routing Cards -->
+                <div class="terminal-hardware-grid">
+                    <div class="hardware-card">
+                        <div class="hardware-icon"><i class="fa-solid fa-mobile-screen"></i></div>
+                        <div class="hardware-info">
+                            <span class="hardware-label">📱 Phone Connection</span>
+                            <strong class="hardware-status" id="phoneConnStatus">Connection status unavailable</strong>
+                        </div>
+                    </div>
+
+                    <div class="hardware-card">
+                        <div class="hardware-icon"><i class="fa-solid fa-headphones"></i></div>
+                        <div class="hardware-info">
+                            <span class="hardware-label">🎧 3.5mm Sound Card (IN / OUT)</span>
+                            <strong class="hardware-status" id="audio35ConnStatus">Connected (Audio Input Detected)</strong>
+                        </div>
+                    </div>
+
+                    <!-- Real-Time Conversational Caller Status -->
+                    <div class="hardware-card" id="terminalCallerStatusCard" style="grid-column: 1 / -1; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; background: linear-gradient(135deg, #FFFFFF, #F8FAFC); border: 1px solid var(--gs-border);">
+                        <div style="display:flex; align-items:center; gap:14px;">
+                            <div style="width:40px; height:40px; border-radius:50%; background:rgba(37,99,235,0.08); display:flex; align-items:center; justify-content:center; color:var(--gs-primary); font-size:18px;">
+                                <i class="fa-solid fa-user-tag"></i>
+                            </div>
+                            <div>
+                                <span class="hardware-label" style="display:block; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:var(--gs-muted); font-weight:700;">CALLER STATUS</span>
+                                <strong class="hardware-status" id="terminalCallerStatus" style="font-size:14px; color:var(--gs-text-main);">Waiting for caller...</strong>
+                            </div>
+                        </div>
+                        <div id="terminalCallerMetaDetails" style="display:flex; align-items:center; gap:12px; font-size:12.5px; font-weight:600; color:var(--gs-muted);">
+                            <span id="terminalCallerBadge" class="status-pill" style="background:#F1F5F9; color:#475569; display:inline-flex; align-items:center; gap:5px;">
+                                <i class="fa-solid fa-circle" style="font-size:7px; color:#94A3B8;"></i> Hands-Free Line Ready
+                            </span>
+                        </div>
+                    </div>
+
+                    <div class="hardware-card" style="grid-column: 1 / -1; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
+                        <div style="display:flex; align-items:center; gap:10px;">
+                            <i class="fa-solid fa-volume-high" style="color:var(--gs-primary); font-size:18px;"></i>
+                            <div>
+                                <span class="hardware-label" style="display:block;">🔊 Audio Output (To Phone):</span>
+                                <select id="terminalAudioOutputSelect" style="padding:6px 10px; border-radius:var(--gs-radius-sm); border:1px solid var(--gs-border); font-size:12.5px; font-weight:600; outline:none; background:#FFF;">
+                                    <option value="default">Default System Audio Output</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div style="display:flex; gap:8px;">
+                            <button type="button" class="btn btn-outline btn-sm" id="testToneSignalBtn">
+                                <i class="fa-solid fa-signal"></i> 🎵 Play 3.5mm Signal Tone
+                            </button>
+                            <button type="button" class="btn btn-outline btn-sm" id="testAudioOutputBtn">
+                                <i class="fa-solid fa-play"></i> 🔊 Test Voice Output
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Central Big Voice Agent Switch -->
+                <div class="voice-agent-master-switch-card">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                        <span class="switch-title" style="margin:0;">VOICE AGENT MASTER CONTROL</span>
+                        <div class="va-state-pill idle" id="vaLiveStateBadge">
+                            <span class="state-dot"></span>
+                            <span id="vaLiveStateText">⚪ IDLE</span>
+                        </div>
+                    </div>
+                    <button type="button" class="agent-power-btn off" id="voiceAgentPowerBtn">
+                        <i class="fa-solid fa-power-off"></i>
+                        <span id="voiceAgentPowerLabel">🔴 OFF</span>
+                    </button>
+                    <p class="switch-desc" id="voiceAgentPowerDesc">Click to enable incoming voice/audio processing pipeline from 3.5mm sound card.</p>
+
+                    <!-- Real-Time Hardware Signal VU Meter -->
+                    <div class="terminal-vu-container" id="terminalVuContainer" style="margin-top:16px;">
+                        <div class="vu-label-row">
+                            <span><i class="fa-solid fa-wave-square"></i> 3.5mm Signal Level:</span>
+                            <span class="vu-status-badge" id="terminalLiveAudioStatus">Pipeline Idle</span>
+                        </div>
+                        <div class="vu-meter-track">
+                            <div class="vu-meter-fill" id="terminalVuMeterBar" style="width: 0%;"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Real-Time Audio Diagnostics Panel -->
+                <div class="terminal-diagnostics-card" style="margin-bottom:16px;">
+                    <div class="diag-header">
+                        <h4><i class="fa-solid fa-stethoscope"></i> AUDIO PIPELINE DIAGNOSTICS</h4>
+                        <button type="button" class="btn btn-primary btn-sm" id="testAiVoiceBtn">
+                            <i class="fa-solid fa-volume-high"></i> 🔊 Test AI Voice
+                        </button>
+                    </div>
+                    <div class="diag-grid">
+                        <div class="diag-item" id="diagInputAudio">
+                            <span class="diag-label">INPUT AUDIO (3.5mm)</span>
+                            <strong class="diag-val idle">⚪ Idle</strong>
+                        </div>
+                        <div class="diag-item" id="diagStt">
+                            <span class="diag-label">SPEECH-TO-TEXT</span>
+                            <strong class="diag-val idle">⚪ Ready</strong>
+                        </div>
+                        <div class="diag-item" id="diagAiResponse">
+                            <span class="diag-label">AI RESPONSE</span>
+                            <strong class="diag-val idle">⚪ Ready</strong>
+                        </div>
+                        <div class="diag-item" id="diagTts">
+                            <span class="diag-label">TEXT-TO-SPEECH</span>
+                            <strong class="diag-val idle">⚪ Ready</strong>
+                        </div>
+                        <div class="diag-item" id="diagAudioPlayback">
+                            <span class="diag-label">AUDIO PLAYBACK</span>
+                            <strong class="diag-val idle">⚪ Ready</strong>
+                        </div>
+                        <div class="diag-item" id="diagOutputDevice">
+                            <span class="diag-label">OUTPUT DEVICE</span>
+                            <strong class="diag-val ok">🟢 Default / USB</strong>
+                        </div>
+                    </div>
+                    <div class="diag-error-box hidden" id="diagErrorBox"></div>
+                </div>
+
+                <!-- Live Transcript & Verified AI Actions Grid -->
+                <div class="terminal-split-grid">
+                    <!-- Live Transcript -->
+                    <div class="terminal-panel">
+                        <div class="panel-header">
+                            <h3><i class="fa-solid fa-comments"></i> LIVE TRANSCRIPT</h3>
+                            <button type="button" class="btn-text-link" id="clearTranscriptBtn">Clear</button>
+                        </div>
+                        <div class="transcript-viewport" id="terminalTranscriptBox">
+                            <div class="transcript-idle" id="transcriptIdleMsg">
+                                <i class="fa-solid fa-microphone-slash"></i>
+                                <p>Waiting for voice input...</p>
+                            </div>
+                        </div>
+                        <div class="terminal-input-bar">
+                            <input type="text" id="terminalTextInput" placeholder="Type caller message or speak into 3.5mm line...">
+                            <button type="button" class="btn btn-primary btn-sm" id="terminalSendBtn">
+                                <i class="fa-solid fa-paper-plane"></i>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- AI Actions / Database Result -->
+                    <div class="terminal-panel">
+                        <div class="panel-header">
+                            <h3><i class="fa-solid fa-database"></i> AI ACTIONS</h3>
+                        </div>
+                        <div class="ai-actions-viewport" id="terminalAiActionsBox">
+                            <div class="action-idle">
+                                <p>No actions performed yet.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Real Activity Log -->
+                <div class="content-section" style="margin-top:24px">
+                    <div class="section-title-row">
+                        <h3><i class="fa-solid fa-list-check"></i> ACTIVITY LOG</h3>
+                        <button type="button" class="btn-text-link" id="refreshActivityLogBtn"><i class="fa-solid fa-rotate"></i> Refresh</button>
+                    </div>
+                    <div class="activity-log-card" id="terminalActivityLogList">
+                        <div class="empty-placeholder">
+                            <p>No recent activity recorded.</p>
+                        </div>
+                    </div>
+                </div>
+            </main>
+        </section>
+
+    </div>
+
+    <!-- ======================================================================
+         MODALS & DIALOGS
+         ====================================================================== -->
+
+    <!-- 1. CREATE JOB MODAL (CUSTOMER) -->
+    <div id="createJobModal" class="modal-backdrop hidden">
+        <div class="modal-card">
+            <div class="modal-header">
+                <h3>Post a Job</h3>
+                <button type="button" class="modal-close-btn" id="closeCreateJobModalBtn"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <form id="createJobForm" class="modal-form">
+                <div class="form-field">
+                    <label class="field-label" for="newJobServiceSelect">Service Category</label>
+                    <select id="newJobServiceSelect" class="field-input" required>
+                        <option value="Electrical">⚡ Electrical</option>
+                        <option value="Plumbing">🔧 Plumbing</option>
+                        <option value="Carpentry">🔨 Carpentry</option>
+                        <option value="Mechanics">🏍️ Two-Wheeler Mechanic</option>
+                        <option value="AC & Appliances">❄️ AC &amp; Appliances</option>
+                        <option value="Painting">🎨 Painting</option>
+                        <option value="Home Cleaning">🧹 Cleaning</option>
+                    </select>
+                </div>
+
+                <div class="form-field">
+                    <label class="field-label" for="newJobDescription">Description</label>
+                    <textarea id="newJobDescription" class="field-input" rows="3" placeholder="Describe what needs repair or installation..." required></textarea>
+                </div>
+
+                <div class="form-row-2">
+                    <div class="form-field">
+                        <label class="field-label" for="newJobDate">Date</label>
+                        <input type="text" id="newJobDate" class="field-input" value="Today" required>
+                    </div>
+                    <div class="form-field">
+                        <label class="field-label" for="newJobTime">Time</label>
+                        <input type="text" id="newJobTime" class="field-input" value="Immediate" required>
+                    </div>
+                </div>
+
+                <div class="form-row-2">
+                    <div class="form-field">
+                        <label class="field-label" for="newJobLocation">Location / Area</label>
+                        <input type="text" id="newJobLocation" class="field-input" value="Town Area" required>
+                    </div>
+                    <div class="form-field">
+                        <label class="field-label" for="newJobBudget">Budget (₹)</label>
+                        <input type="text" id="newJobBudget" class="field-input" value="₹300" required>
+                    </div>
+                </div>
+
+                <button type="submit" class="btn btn-primary btn-block" id="submitNewJobBtn">
+                    Post Job
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- 2. EDIT WORKER AVAILABILITY MODAL (WORKER) — Pattern-based scheduling -->
+    <div id="workerAvailModal" class="modal-backdrop hidden">
+        <div class="modal-card avail-modal-card">
+            <div class="modal-header">
+                <h3><i class="fa-solid fa-calendar-check"></i> Set Availability</h3>
+                <button type="button" class="modal-close-btn" id="closeAvailModalBtn"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+
+            <!-- Pattern Type Tabs -->
+            <div class="avail-pattern-tabs" id="availPatternTabs">
+                <button type="button" class="avail-tab active" data-pattern="once">
+                    <i class="fa-solid fa-calendar-day"></i> Once
+                </button>
+                <button type="button" class="avail-tab" data-pattern="weekly">
+                    <i class="fa-solid fa-rotate"></i> Weekly
+                </button>
+                <button type="button" class="avail-tab" data-pattern="daily">
+                    <i class="fa-solid fa-sun"></i> Daily
+                </button>
+            </div>
+
+            <form id="workerAvailForm" class="modal-form avail-form-body">
+
+                <!-- Day-of-week chip row (shown only for Weekly) -->
+                <div id="availDowRow" class="avail-dow-row hidden">
+                    <span class="field-label" style="margin-bottom:8px;display:block">Days of Week</span>
+                    <div class="dow-chips" id="availDowChips">
+                        <button type="button" class="dow-chip" data-day="0">S</button>
+                        <button type="button" class="dow-chip" data-day="1">M</button>
+                        <button type="button" class="dow-chip" data-day="2">T</button>
+                        <button type="button" class="dow-chip" data-day="3">W</button>
+                        <button type="button" class="dow-chip" data-day="4">T</button>
+                        <button type="button" class="dow-chip" data-day="5">F</button>
+                        <button type="button" class="dow-chip" data-day="6">S</button>
+                    </div>
+                </div>
+
+                <!-- Date range / single date -->
+                <div class="form-row-2" id="availDateRangeRow">
+                    <div class="form-field" id="availStartDateField">
+                        <label class="field-label" for="availRangeStart" id="availStartDateLabel">Date</label>
+                        <input type="date" id="availRangeStart" class="field-input" required>
+                    </div>
+                    <div class="form-field hidden" id="availEndDateField">
+                        <label class="field-label" for="availRangeEnd">Until (optional)</label>
+                        <input type="date" id="availRangeEnd" class="field-input">
+                    </div>
+                </div>
+
+                <!-- Hours -->
+                <div class="form-row-2">
+                    <div class="form-field">
+                        <label class="field-label" for="availStartTimeSelect">Start Time</label>
+                        <select id="availStartTimeSelect" class="field-input">
+                            <option value="06:00 AM">06:00 AM</option>
+                            <option value="07:00 AM">07:00 AM</option>
+                            <option value="08:00 AM">08:00 AM</option>
+                            <option value="09:00 AM" selected>09:00 AM</option>
+                            <option value="10:00 AM">10:00 AM</option>
+                            <option value="11:00 AM">11:00 AM</option>
+                            <option value="12:00 PM">12:00 PM</option>
+                            <option value="01:00 PM">01:00 PM</option>
+                            <option value="02:00 PM">02:00 PM</option>
+                        </select>
+                    </div>
+                    <div class="form-field">
+                        <label class="field-label" for="availEndTimeSelect">End Time</label>
+                        <select id="availEndTimeSelect" class="field-input">
+                            <option value="12:00 PM">12:00 PM</option>
+                            <option value="01:00 PM">01:00 PM</option>
+                            <option value="02:00 PM">02:00 PM</option>
+                            <option value="03:00 PM">03:00 PM</option>
+                            <option value="04:00 PM">04:00 PM</option>
+                            <option value="05:00 PM" selected>05:00 PM</option>
+                            <option value="06:00 PM">06:00 PM</option>
+                            <option value="07:00 PM">07:00 PM</option>
+                            <option value="08:00 PM">08:00 PM</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Current saved slots preview -->
+                <div class="avail-current-slots" id="availCurrentSlots">
+                    <span class="field-label" style="margin-bottom:6px;display:block">Saved Schedule</span>
+                    <div id="availSlotsList" class="avail-slots-list"><em style="color:var(--gs-muted);font-size:13px">No slots saved yet.</em></div>
+                </div>
+
+                <button type="submit" class="btn btn-primary btn-block" id="saveAvailBtn">
+                    <i class="fa-solid fa-floppy-disk"></i> Save Availability
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- 2b. CONFLICT RESOLUTION MODAL (WORKER — shown after availability edit) -->
+    <div id="workerConflictModal" class="modal-backdrop hidden">
+        <div class="modal-card conflict-modal-card">
+            <div class="modal-header">
+                <h3><i class="fa-solid fa-triangle-exclamation" style="color:#f59e0b"></i> Affected Bookings</h3>
+            </div>
+            <p class="conflict-modal-desc">
+                You have booked jobs that fall on dates no longer covered by your new schedule.
+                Let us know if you can still work each one.
+            </p>
+            <div id="conflictJobsList" class="conflict-jobs-list"></div>
+            <button type="button" class="btn btn-primary btn-block" id="conflictDoneBtn" style="margin-top:16px">
+                <i class="fa-solid fa-check"></i> Confirm Decisions
+            </button>
+        </div>
+    </div>
+
+    <!-- 2c. CUSTOMER CALENDAR BOOKING MODAL -->
+    <div id="customerCalendarModal" class="modal-backdrop hidden">
+        <div class="modal-card calendar-modal-card">
+            <div class="modal-header">
+                <h3><i class="fa-solid fa-calendar-days"></i> Book a Service</h3>
+                <button type="button" class="modal-close-btn" id="closeCalendarModalBtn"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+
+            <!-- Mini calendar -->
+            <div class="mini-cal-header">
+                <button type="button" class="cal-nav-btn" id="calPrevMonthBtn"><i class="fa-solid fa-chevron-left"></i></button>
+                <span id="calMonthLabel" class="cal-month-label"></span>
+                <button type="button" class="cal-nav-btn" id="calNextMonthBtn"><i class="fa-solid fa-chevron-right"></i></button>
+            </div>
+            <div class="mini-cal-dow-labels">
+                <span>S</span><span>M</span><span>T</span><span>W</span><span>T</span><span>F</span><span>S</span>
+            </div>
+            <div id="miniCalGrid" class="mini-cal-grid"></div>
+
+            <!-- Workers available on selected date -->
+            <div id="calSelectedDateLabel" class="cal-selected-label hidden">
+                <i class="fa-solid fa-circle-check" style="color:var(--gs-primary)"></i>
+                <span id="calDateText"></span>
+            </div>
+            <div id="calWorkersPanel" class="cal-workers-panel hidden">
+                <p class="cal-workers-heading">Available Specialists</p>
+                <div id="calWorkersList" class="cal-workers-list"></div>
+            </div>
+
+            <!-- Time selector (shown once a worker is picked) -->
+            <div id="calTimeRow" class="form-row-2 hidden" style="margin-top:12px">
+                <div class="form-field">
+                    <label class="field-label" for="calTimeSelect">Preferred Time</label>
+                    <select id="calTimeSelect" class="field-input">
+                        <option value="08:00 AM">08:00 AM</option>
+                        <option value="09:00 AM">09:00 AM</option>
+                        <option value="10:00 AM" selected>10:00 AM</option>
+                        <option value="11:00 AM">11:00 AM</option>
+                        <option value="12:00 PM">12:00 PM</option>
+                        <option value="01:00 PM">01:00 PM</option>
+                        <option value="02:00 PM">02:00 PM</option>
+                        <option value="03:00 PM">03:00 PM</option>
+                        <option value="04:00 PM">04:00 PM</option>
+                        <option value="05:00 PM">05:00 PM</option>
+                    </select>
+                </div>
+                <div class="form-field" style="display:flex;align-items:flex-end">
+                    <button type="button" class="btn btn-primary btn-block" id="calConfirmBookingBtn">
+                        <i class="fa-solid fa-check"></i> Confirm
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+
+
+    <!-- 3. LOCATION SELECTOR MODAL -->
+    <div id="locationModal" class="modal-backdrop hidden">
+        <div class="modal-card">
+            <div class="modal-header">
+                <h3>Select Location</h3>
+                <button type="button" class="modal-close-btn" id="closeLocationModalBtn"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="modal-body">
+                <button type="button" class="btn btn-outline btn-block" id="detectGpsLocationBtn">
+                    <i class="fa-solid fa-crosshairs"></i> Detect Current Location
+                </button>
+                <div class="cities-grid" id="citiesListGrid">
+                    <div class="city-tile active" data-city="Ramanagara"><strong>Ramanagara</strong><span>Karnataka</span></div>
+                    <div class="city-tile" data-city="Chitradurga"><strong>Chitradurga</strong><span>Karnataka</span></div>
+                    <div class="city-tile" data-city="Mandya"><strong>Mandya</strong><span>Karnataka</span></div>
+                    <div class="city-tile" data-city="Hassan"><strong>Hassan</strong><span>Karnataka</span></div>
+                    <div class="city-tile" data-city="Tumakuru"><strong>Tumakuru</strong><span>Karnataka</span></div>
+                    <div class="city-tile" data-city="Shivamogga"><strong>Shivamogga</strong><span>Karnataka</span></div>
+                    <div class="city-tile" data-city="Davangere"><strong>Davangere</strong><span>Karnataka</span></div>
+                    <div class="city-tile" data-city="Belagavi"><strong>Belagavi</strong><span>Karnataka</span></div>
+                    <div class="city-tile" data-city="Hubballi"><strong>Hubballi</strong><span>Karnataka</span></div>
+                    <div class="city-tile" data-city="Kannur"><strong>Kannur</strong><span>Kerala</span></div>
+                    <div class="city-tile" data-city="Kasaragod"><strong>Kasaragod</strong><span>Kerala</span></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 4. TALK TO GIGSYNC AI VOICE ASSISTANT MODAL -->
+    <div id="aiVoiceModal" class="modal-backdrop hidden">
+        <div class="modal-card ai-voice-card">
+            <div class="modal-header">
+                <div class="ai-header-title">
+                    <div class="brand-logo-badge sm">G</div>
+                    <div>
+                        <h3>Talk to GigSync</h3>
+                        <small>Speak in English, ಕನ್ನಡ, or Hindi</small>
+                    </div>
+                </div>
+                <button type="button" class="modal-close-btn" id="closeAiVoiceModalBtn"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+
+            <div class="voice-interaction-area">
+                <button type="button" class="big-mic-btn" id="aiModalBigMicBtn" title="Click to speak">
+                    <i class="fa-solid fa-microphone"></i>
+                </button>
+                <div class="voice-status-text" id="aiVoiceStateLabel">Click microphone to speak</div>
+
+                <!-- Animated Wave Bars -->
+                <div class="wave-bars-row hidden" id="aiModalWaveBars">
+                    <div class="bar"></div><div class="bar"></div><div class="bar"></div>
+                    <div class="bar"></div><div class="bar"></div><div class="bar"></div>
+                    <div class="bar"></div><div class="bar"></div>
+                </div>
+
+                <!-- Live Spoken Transcript Pill -->
+                <div id="aiLiveStreamTranscript" class="live-transcript-pill hidden">
+                    <i class="fa-solid fa-waveform-lines"></i> <span id="aiLiveStreamText">Listening...</span>
+                </div>
+            </div>
+
+            <!-- Suggested Quick Chips -->
+            <div class="quick-chips-row">
+                <button type="button" class="q-chip" data-qprompt="I need a plumber tomorrow morning.">🔧 "I need a plumber tomorrow morning."</button>
+                <button type="button" class="q-chip" data-qprompt="Nanage electrician beku.">⚡ "Nanage electrician beku."</button>
+                <button type="button" class="q-chip" data-qprompt="Show me workers available near me.">📍 "Show me workers near me."</button>
+            </div>
+
+            <!-- Dialogue History -->
+            <div class="dialogue-box" id="aiModalTranscriptBox">
+                <div class="dialogue-entry ai">
+                    <strong>GIGSYNC AI:</strong>
+                    <span>Namaskara! How can I help you today?</span>
+                </div>
+            </div>
+
+            <!-- Text Input Bar -->
+            <div class="ai-input-bar">
+                <input type="text" id="aiModalTextInput" placeholder="Type or speak (e.g. Nanage electrician beku)...">
+                <button type="button" class="btn btn-primary btn-icon" id="aiModalSendBtn">
+                    <i class="fa-solid fa-paper-plane"></i>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 5. CUSTOMER MY PROFILE MODAL -->
+    <div id="customerProfileModal" class="modal-backdrop hidden">
+        <div class="modal-card">
+            <div class="modal-header">
+                <h3><i class="fa-solid fa-user-circle"></i> My Profile</h3>
+                <button type="button" class="modal-close-btn" id="closeCustomerProfileModalBtn"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <form id="customerProfileForm" class="modal-form">
+                <div class="form-field">
+                    <label class="field-label" for="custProfileName">Full Name</label>
+                    <input type="text" id="custProfileName" class="field-input" placeholder="Your full name">
+                </div>
+                <div class="form-field">
+                    <label class="field-label" for="custProfilePhone">Mobile Number</label>
+                    <input type="text" id="custProfilePhone" class="field-input" readonly style="background:var(--gs-bg-alt);cursor:not-allowed;opacity:.7">
+                    <small class="field-hint">Phone number cannot be changed</small>
+                </div>
+                <div class="form-row-2">
+                    <div class="form-field">
+                        <label class="field-label" for="custProfileCity">City</label>
+                        <select id="custProfileCity" class="field-input">
+                            <option value="Ramanagara">Ramanagara</option>
+                            <option value="Chitradurga">Chitradurga</option>
+                            <option value="Mandya">Mandya</option>
+                            <option value="Hassan">Hassan</option>
+                            <option value="Tumakuru">Tumakuru</option>
+                            <option value="Shivamogga">Shivamogga</option>
+                            <option value="Davangere">Davangere</option>
+                            <option value="Belagavi">Belagavi</option>
+                            <option value="Hubballi">Hubballi</option>
+                            <option value="Kannur">Kannur</option>
+                            <option value="Kasaragod">Kasaragod</option>
+                        </select>
+                    </div>
+                    <div class="form-field">
+                        <label class="field-label" for="custProfileArea">Area / Locality</label>
+                        <input type="text" id="custProfileArea" class="field-input" placeholder="e.g. Town, Main Road">
+                    </div>
+                </div>
+                <button type="submit" class="btn btn-primary btn-block">
+                    <i class="fa-solid fa-check"></i> Save Profile
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Toast Notification -->
+    <div id="toast" class="toast-popup hidden">
+        <i class="fa-solid fa-circle-check"></i> <span id="toastMsg">Notification</span>
+    </div>
+
+    <!-- Application Script -->
+    <script src="app.js"></script>
+</body>
+
+</html>

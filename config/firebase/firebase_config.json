@@ -1,0 +1,7 @@
+{
+  "projectId": "gigsync-app-tier2",
+  "apiKey": "",
+  "authDomain": "gigsync-app-tier2.firebaseapp.com",
+  "databaseURL": "https://gigsync-app-tier2.firebaseio.com",
+  "storageBucket": "gigsync-app-tier2.appspot.com"
+}

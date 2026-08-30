@@ -2989,14 +2989,14 @@ function openAiVoiceModal() {
             dialogueBox.innerHTML = `
                 <div class="dialogue-entry ai">
                     <strong>GIGSYNC AI:</strong>
-                    <span>Namaskara${firstName}! Welcome to your Worker Assistant. I can help you check customer bookings, set your working hours, check your earnings, or find new job requests.</span>
+                    <span>Hi, I'm GigSync, your assistant. How may I help you?</span>
                 </div>
             `;
         } else {
             dialogueBox.innerHTML = `
                 <div class="dialogue-entry ai">
                     <strong>GIGSYNC AI:</strong>
-                    <span>Namaskara${firstName}! How can I help you today? I can help you find verified specialists in ${state.city}, schedule bookings, or check your active bookings.</span>
+                    <span>Hi, I'm GigSync, your assistant. How may I help you?</span>
                 </div>
             `;
         }

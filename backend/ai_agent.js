@@ -1586,7 +1586,9 @@ const sessionManager = new ConversationSessionManager();
 // 3. Location Entity Extractor
 function extractLocationEntity(text, defaultCity = 'Ramanagara') {
     if (!text) return defaultCity;
-    const lower = text.toLowerCase();
+    const lower = text.toLowerCase()
+        .replace(/\ba\s*\.?\s*m\s*\.?(?=\s|$)/g, 'am')
+        .replace(/\bp\s*\.?\s*m\s*\.?(?=\s|$)/g, 'pm');
 
     // Specific city / neighborhood matching FIRST
     const locationMap = [
@@ -1774,6 +1776,8 @@ function extractAvailabilityDate(text) {
     if (dt && dt.date) return dt.date;
 
     const lower = text.toLowerCase();
+    if (text.includes('कल') || text.includes('ನಾಳೆ')) return 'Tomorrow';
+    if (text.includes('आज') || text.includes('ಇಂದು')) return 'Today';
     const dateMatch = lower.match(/\b(tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday|tom|tmrw|naale|ivathu)\b/i);
     if (dateMatch) {
         const dStr = dateMatch[1].toLowerCase();
@@ -1841,10 +1845,33 @@ function getTradePersonNoun(tradeCategory) {
     return `a ${tradeCategory}`;
 }
 
+function assistantGreeting(language) {
+    if (language === 'KN') return 'ಹಾಯ್, ನಾನು GigSync ನಿಮ್ಮ ಸಹಾಯಕ. ನಾನು ಹೇಗೆ ಸಹಾಯ ಮಾಡಲಿ?';
+    if (language === 'HN') return 'हाय, मैं GigSync आपका सहायक हूँ। मैं आपकी कैसे मदद कर सकता हूँ?';
+    return "Hi, I'm GigSync, your assistant. How may I help you?";
+}
+
+function workerPrompt(session, key, english) {
+    const lang = session.language || 'EN';
+    const prompts = {
+        KN: { name: 'ನಿಮ್ಮ ಹೆಸರು ಏನು?', trade: 'ನೀವು ಯಾವ ರೀತಿಯ ಕೆಲಸ ಮಾಡುತ್ತೀರಿ?', phone: 'ನಿಮ್ಮ 10 ಅಂಕಿಯ ಮೊಬೈಲ್ ಸಂಖ್ಯೆಯನ್ನು ಹೇಳಿ.', date: 'ನೀವು ಯಾವ ದಿನ ಲಭ್ಯವಿರುತ್ತೀರಿ?', time: 'ದಯವಿಟ್ಟು ಪ್ರಾರಂಭ ಮತ್ತು ಅಂತ್ಯದ ಸಮಯ ಎರಡನ್ನೂ ಹೇಳಿ.', end: 'ನೀವು ಯಾವ ಸಮಯದವರೆಗೆ ಲಭ್ಯವಿರುತ್ತೀರಿ?', confirm: 'ಈ ವಿವರಗಳನ್ನು ಉಳಿಸಬೇಕೇ?' },
+        HN: { name: 'आपका नाम क्या है?', trade: 'आप किस तरह का काम करते हैं?', phone: 'अपना 10 अंकों का मोबाइल नंबर बताइए।', date: 'आप किस तारीख को उपलब्ध हैं?', time: 'कृपया शुरू और समाप्ति दोनों समय बताइए।', end: 'आप किस समय तक उपलब्ध रहेंगे?', confirm: 'क्या मैं इन विवरणों को सहेज दूँ?' }
+    };
+    return (prompts[lang] && prompts[lang][key]) || english;
+}
+
 // Helper to extract start and end time range from natural utterances
 function extractTimeRange(text) {
     if (!text) return null;
-    let lower = text.toLowerCase().replace(/\ba\.m\.\b/g, 'am').replace(/\bp\.m\.\b/g, 'pm').replace(/\bo'clock\b/g, '');
+    let lower = text.toLowerCase()
+        // Web Speech commonly returns dotted a.m./p.m.; normalise before parsing.
+        .replace(/\ba\s*\.?\s*m\s*\.?(?=\s|$)/g, 'am')
+        .replace(/\bp\s*\.?\s*m\s*\.?(?=\s|$)/g, 'pm')
+        .replace(/\bo'clock\b/g, '')
+        // Hindi and Kannada range connectors, including "9 से 4 बजे तक".
+        .replace(/\s*(?:से|तक|ವರೆಗೆ)\s*/gu, ' to ')
+        .replace(/\s*(?:ರಿಂದ|ಇಂದ)\s*/gu, ' to ')
+        .replace(/\s*बजे\s*/gu, ' ');
 
     // 1. Natural keywords without numbers
     if (lower.includes('evening') && !lower.match(/\d/)) {
@@ -1969,7 +1996,9 @@ function extractTimeWindow(text) {
     if (range) return range;
 
     if (!text) return null;
-    const lower = text.toLowerCase();
+    const lower = text.toLowerCase()
+        .replace(/\ba\s*\.?\s*m\s*\.?(?=\s|$)/g, 'am')
+        .replace(/\bp\s*\.?\s*m\s*\.?(?=\s|$)/g, 'pm');
     const singleMatch = lower.match(/\b(?:at\s+|by\s+|around\s+|for\s+)?(\d{1,2}(?::\d{2})?)\s*(am|pm)\b/i);
     if (singleMatch) {
         const timeStr = singleMatch[1];
@@ -2104,7 +2133,7 @@ async function processCustomerTurn(session, text, actionsPerformed) {
     if (/^(hello|hi|hey|namaskara|namaste|good morning|good afternoon|good evening)\b/i.test(lower) && lower.split(/\s+/).length <= 4) {
         const namePart = (customerName && customerName !== 'Customer') ? ` ${customerName}` : '';
         return {
-            spokenResponse: `Namaskara${namePart}! How can I help you today? You can ask me to find an electrician, plumber, or cleaner in ${city}, or check your existing bookings.`,
+            spokenResponse: assistantGreeting(session.language),
             detectedIntent: 'greeting'
         };
     }
@@ -2353,6 +2382,15 @@ async function processWorkerTurn(session, text, actionsPerformed) {
     if (draft.awaiting_confirmation === undefined) draft.awaiting_confirmation = false;
     const lower = text.toLowerCase().trim();
 
+    // An anonymous terminal cannot know which account was selected. Do not
+    // start a new registration just because the caller asks this question.
+    if (/\b(?:which|what)\s+(?:account|profile).*(?:logged|login|signed)|\b(?:logged|login|signed).*(?:account|profile)\b/i.test(lower)) {
+        const knownPhone = draft.phone || workerPhone;
+        const worker = knownPhone ? DB.getWorkerByPhone(knownPhone) : null;
+        if (worker) return { spokenResponse: `You are using the worker account for ${worker.name}, registered as ${getTradePersonNoun(worker.trade)}.`, detectedIntent: 'account_identity' };
+        return { spokenResponse: 'No worker account is linked to this terminal yet. Tell me your 10-digit registered phone number, or say "sign me up" to create one.', detectedIntent: 'account_identity_unknown' };
+    }
+
     // 1. Gratitude & Call Ending
     if (/\b(thank you|thanks|thank you so much|dhanyavada|dhanyavadagalu|shukriya)\b/i.test(lower) ||
         (/\b(bye|goodbye|that's all|thats all|that is all|nothing else|nothing more)\b/i.test(lower) && lower.split(/\s+/).length <= 5)) {
@@ -2368,7 +2406,7 @@ async function processWorkerTurn(session, text, actionsPerformed) {
     if (/^(hello|hi|hey|namaskara|namaste|good morning|good afternoon|good evening)\b/i.test(lower) && lower.split(/\s+/).length <= 4) {
         const namePart = (session.callerName && session.callerName !== 'Specialist' && session.callerName !== 'User') ? ` ${session.callerName}` : '';
         return {
-            spokenResponse: `Namaskara${namePart}! Welcome to your Worker Assistant. You can ask me to check your customer bookings, set your working hours, check your earnings, or find new job requests.`,
+            spokenResponse: assistantGreeting(session.language),
             detectedIntent: 'greeting'
         };
     }
@@ -2676,6 +2714,11 @@ async function processWorkerTurn(session, text, actionsPerformed) {
                 draft.last_asked_field = null;
                 draft.completed = true;
                 draft.awaiting_confirmation = false;
+                // Terminal callers start anonymous. Preserve the newly verified
+                // number on the session so follow-up questions use this profile.
+                session.callerPhone = draft.phone;
+                session.callerRole = 'worker';
+                session.callerName = savedWorker ? savedWorker.name : draft.name;
                 return {
                     spokenResponse: `Done. Your details have been updated successfully. You are registered as ${savedNoun} and available ${draft.availability_date.toLowerCase()} from ${timeDisplay}.`,
                     detectedIntent: 'worker_updated',
@@ -2801,32 +2844,51 @@ async function processWorkerTurn(session, text, actionsPerformed) {
 
     // Time
     if (extractedTime) {
-        draft.start_time = extractedTime.startTime;
-        draft.end_time = extractedTime.endTime;
-        draft.start_display = extractedTime.startDisplay;
-        draft.end_display = extractedTime.endDisplay;
+        const isSingleTime = extractedTime.startTime === extractedTime.endTime;
+        if (isSingleTime && draft.start_time && !draft.end_time) {
+            // The caller is answering the precise follow-up: "until when?"
+            draft.end_time = extractedTime.startTime;
+            draft.end_display = extractedTime.startDisplay;
+        } else if (isSingleTime) {
+            // A single clock time is never an availability range.
+            draft.start_time = extractedTime.startTime;
+            draft.start_display = extractedTime.startDisplay;
+            draft.end_time = null;
+            draft.end_display = null;
+        } else {
+            draft.start_time = extractedTime.startTime;
+            draft.end_time = extractedTime.endTime;
+            draft.start_display = extractedTime.startDisplay;
+            draft.end_display = extractedTime.endDisplay;
+        }
     }
 
     // Determine next missing field
     if (!draft.name) {
         draft.last_asked_field = 'name';
-        return { spokenResponse: "What is your name?", detectedIntent: 'ask_name' };
+        return { spokenResponse: workerPrompt(session, 'name', 'What is your name?'), detectedIntent: 'ask_name' };
     }
     if (!draft.job_role) {
         draft.last_asked_field = 'job_role';
-        return { spokenResponse: "What type of work do you do?", detectedIntent: 'ask_job_role' };
+        return { spokenResponse: workerPrompt(session, 'trade', 'What type of work do you do?'), detectedIntent: 'ask_job_role' };
     }
     if (!draft.phone || draft.phone.length < 10) {
         draft.last_asked_field = 'phone';
-        return { spokenResponse: "What is your 10-digit phone number?", detectedIntent: 'ask_phone' };
+        return { spokenResponse: workerPrompt(session, 'phone', 'What is your 10-digit phone number?'), detectedIntent: 'ask_phone' };
     }
     if (!draft.availability_date) {
         draft.last_asked_field = 'availability_date';
-        return { spokenResponse: "What date are you available?", detectedIntent: 'ask_date' };
+        return { spokenResponse: workerPrompt(session, 'date', 'What date are you available?'), detectedIntent: 'ask_date' };
     }
     if (!draft.start_time || !draft.end_time) {
-        draft.last_asked_field = 'time';
-        return { spokenResponse: "What time are you available?", detectedIntent: 'ask_time' };
+        const askingForEnd = Boolean(draft.start_time && !draft.end_time);
+        draft.last_asked_field = askingForEnd ? 'end_time' : 'time';
+        return {
+            spokenResponse: askingForEnd
+                ? `${draft.start_display || draft.start_time}. ${workerPrompt(session, 'end', 'Until what time will you be available?')}`
+                : workerPrompt(session, 'time', 'What time are you available? Please tell me both the start and end time.'),
+            detectedIntent: askingForEnd ? 'ask_end_time' : 'ask_time'
+        };
     }
 
     // ALL 5 FIELDS PRESENT -> CONFIRM

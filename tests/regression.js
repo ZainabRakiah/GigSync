@@ -494,6 +494,31 @@ await test('Phase 0.5-D — Worker Voice Agent answers profession, bookings, and
     assert.ok(singleTimeResult.spokenResponse.toLowerCase().includes('until what time'), 'A single start time must ask for the end time');
 });
 
+await test('Voice onboarding retains a single start time and accepts dotted English/Hindi time ranges', async () => {
+    const { aiAgent } = require('../backend/ai_agent');
+    const sessionId = `voice_onboarding_${Date.now()}`;
+    const common = { sessionId, callerRole: 'worker', callerName: 'User', city: 'Ramanagara' };
+    await aiAgent.processCallTurn({ ...common, speechText: 'Sign me up, my name is Zainab' });
+    await aiAgent.processCallTurn({ ...common, speechText: 'I am a painter' });
+    await aiAgent.processCallTurn({ ...common, speechText: '963 852 7411' });
+    await aiAgent.processCallTurn({ ...common, speechText: 'tomorrow' });
+    const startOnly = await aiAgent.processCallTurn({ ...common, speechText: 'tomorrow at 9:00 a.m.' });
+    assert.ok(startOnly.spokenResponse.toLowerCase().includes('until what time'), 'A dotted a.m. start time must ask only for an end time');
+    const completedRange = await aiAgent.processCallTurn({ ...common, speechText: '10:00 p.m.' });
+    assert.ok(completedRange.spokenResponse.toLowerCase().includes('confirm'), 'The end time must complete the draft instead of being discarded');
+    await aiAgent.processCallTurn({ ...common, speechText: 'yes' });
+    const accountResult = await aiAgent.processCallTurn({ ...common, speechText: 'Which account am I logged into?' });
+    assert.ok(accountResult.spokenResponse.toLowerCase().includes('zainab'), 'A newly registered terminal caller must keep their worker identity');
+
+    const hindiSession = `voice_hindi_${Date.now()}`;
+    const hindi = { sessionId: hindiSession, callerRole: 'worker', callerName: 'User', city: 'Ramanagara' };
+    await aiAgent.processCallTurn({ ...hindi, speechText: 'my name is Nisha' });
+    await aiAgent.processCallTurn({ ...hindi, speechText: 'I am a painter' });
+    await aiAgent.processCallTurn({ ...hindi, speechText: '9638527412' });
+    const hindiRange = await aiAgent.processCallTurn({ ...hindi, speechText: 'कल 9:00 से 4:00 बजे तक' });
+    assert.ok(hindiRange.spokenResponse.toLowerCase().includes('confirm'), 'Hindi date and time range must fill the availability draft');
+});
+
 /* =========================================================================
    RESULTS
    ========================================================================= */

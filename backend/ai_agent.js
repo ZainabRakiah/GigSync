@@ -1062,10 +1062,10 @@ const GEMINI_TOOLS_DECLARATIONS = [
 const GEMINI_MODEL_CHAIN = (() => {
     const preferred = (process.env.GEMINI_MODEL || '').trim();
     const chain = [
-        'gemini-3.6-flash',
-        'gemini-3.5-flash',
-        'gemini-3.5-flash-lite',
-        'gemini-3.1-flash-lite'
+        // Stable Google Gemini API ids. The previous 3.x placeholders can
+        // fail in production and force the English-only local fallback.
+        'gemini-2.5-flash-lite',
+        'gemini-2.5-flash'
     ];
     if (preferred) chain.unshift(preferred);
     return chain.filter((m, i) => chain.indexOf(m) === i);
@@ -1140,17 +1140,18 @@ class GeminiConversationalBrain {
         return null;
     }
 
-    // Ask model with strict 4-second timeout so callers are never kept waiting
+    // Voice interaction must feel conversational.  Fall back to the local,
+    // deterministic agent if Gemini cannot produce its first response quickly.
     async generateWithFallback(client, request) {
         let lastErr = null;
-        const timeoutMs = 4000;
+        const timeoutMs = Math.min(Number(process.env.AI_RESPONSE_TIMEOUT_MS) || 1800, 1800);
 
-        for (let attempt = 0; attempt < Math.min(2, this.modelChain.length); attempt++) {
+        for (let attempt = 0; attempt < 1; attempt++) {
             const idx = (this.modelIndex + attempt) % this.modelChain.length;
             const model = this.modelChain[idx];
             try {
                 const timeoutPromise = new Promise((_, reject) =>
-                    setTimeout(() => reject(new Error('Gemini API call timed out after 4 seconds')), timeoutMs)
+                    setTimeout(() => reject(new Error(`Gemini API call timed out after ${timeoutMs}ms`)), timeoutMs)
                 );
                 const apiPromise = client.models.generateContent({ ...request, model });
                 const response = await Promise.race([apiPromise, timeoutPromise]);
@@ -1856,6 +1857,23 @@ function extractTimeRange(text) {
         return { startTime: '01:00 PM', endTime: '05:00 PM', startDisplay: '1 PM', endDisplay: '5 PM' };
     }
 
+    // Prefer the unambiguous common form before the permissive multilingual
+    // matcher below. The older expression could consume "8 AM to 4 PM" and
+    // return 8 AM for both ends.
+    const explicitRange = lower.match(/\b(\d{1,2}(?::\d{2})?)\s*(am|pm)\s*(?:to|till|until|inda|inda\s*te|-)\s*(\d{1,2}(?::\d{2})?)\s*(am|pm)\b/i);
+    if (explicitRange) {
+        const [, start, startMeridiem, end, endMeridiem] = explicitRange;
+        const format = (value, meridiem) => {
+            const [hourText, minuteText = '00'] = value.split(':');
+            const hour = Number(hourText);
+            const suffix = meridiem.toUpperCase();
+            return { value: `${String(hour).padStart(2, '0')}:${minuteText} ${suffix}`, display: `${hour}${minuteText !== '00' ? `:${minuteText}` : ''} ${suffix}` };
+        };
+        const startValue = format(start, startMeridiem);
+        const endValue = format(end, endMeridiem);
+        return { startTime: startValue.value, endTime: endValue.value, startDisplay: startValue.display, endDisplay: endValue.display };
+    }
+
     // 2. Explicit or implicit range match:
     // e.g. "9:00 to 10:00", "9 to 10", "9 am to 5 pm", "10 to 2", "2 pm to 6 pm", "5 to 5 to 10:00 am", "5 am to 10 am"
     const rangeMatch = lower.match(/(\d{1,2}(?::\d{2})?)\s*(am|pm|in the morning|in the evening|in the afternoon)?(?:\s*(?:to|till|until|inda|inda\s*te|\-)\s*\d{1,2}(?::\d{2})?)*\s*(?:to|till|until|inda|inda\s*te|\-)\s*(\d{1,2}(?::\d{2})?)\s*(am|pm|in the morning|in the evening|in the afternoon|varege)?/i);
@@ -1939,6 +1957,14 @@ function extractTimeRange(text) {
 
 // Helper to extract time window (either range or specific time)
 function extractTimeWindow(text) {
+    // Keep a lone "10 o'clock" as one point in time.  The range parser removes
+    // that wording while normalising input, which otherwise made it look like
+    // an invalid zero-length range.
+    const clockOnly = String(text || '').toLowerCase().match(/\b(?:at\s+|by\s+|around\s+|for\s+)?(\d{1,2})(?:\s*o['’]?clock)\b/i);
+    if (clockOnly) {
+        const hour = Number(clockOnly[1]);
+        return { startTime: `${String(hour).padStart(2, '0')}:00 AM`, endTime: `${String(hour).padStart(2, '0')}:00 AM`, startDisplay: `${hour} AM`, endDisplay: `${hour} AM` };
+    }
     const range = extractTimeRange(text);
     if (range) return range;
 
@@ -2598,6 +2624,37 @@ async function processWorkerTurn(session, text, actionsPerformed) {
     }
 
     // 5. Awaiting Confirmation Response Check
+    // Returning workers have a separate draft so no availability change is
+    // written merely because speech recognition heard a time fragment.
+    if (draft.awaiting_availability_confirmation) {
+        if (/^(yes|yeah|yep|sure|correct|right|okay|ok|done|ha|haudu|confirm|confirmed)\b/i.test(lower)) {
+            const pending = draft.pending_availability;
+            const worker = pending && DB.getWorkerByPhone(draft.phone || workerPhone);
+            if (!pending || !worker) {
+                draft.awaiting_availability_confirmation = false;
+                return { spokenResponse: 'I could not find those availability details. Please tell me the date and your working hours.', detectedIntent: 'availability_draft_missing' };
+            }
+            const saveRes = DB.setWorkerAvailabilitySlot({
+                workerId: worker.id, workerPhone: worker.phone, trade: worker.trade,
+                dateStr: pending.date, startTime: pending.startTime, endTime: pending.endTime,
+                isAvailable: true
+            });
+            draft.awaiting_availability_confirmation = false;
+            draft.pending_availability = null;
+            actionsPerformed.push(`Updated availability for worker ${worker.name}: ${pending.date} ${pending.startTime}-${pending.endTime}`);
+            return {
+                spokenResponse: `Done. Your availability has been updated for ${pending.date} from ${pending.startDisplay} to ${pending.endDisplay}.`,
+                detectedIntent: 'update_availability', toolExecuted: 'updateWorkerAvailability', toolResult: saveRes
+            };
+        }
+        if (/^(no|nope|wrong|change|not correct|cancel)\b/i.test(lower)) {
+            draft.awaiting_availability_confirmation = false;
+            draft.pending_availability = null;
+            draft.last_asked_field = 'availability_start';
+            return { spokenResponse: 'No problem. What time do you want to start?', detectedIntent: 'ask_availability_start' };
+        }
+    }
+
     if (draft.awaiting_confirmation) {
         if (/^(yes|yeah|yep|sure|correct|right|okay|ok|done|ha|haudu|yes please|confirm|confirmed)\b/i.test(lower)) {
             const writeResult = DB.registerOrUpdateWorker({
@@ -2657,28 +2714,40 @@ async function processWorkerTurn(session, text, actionsPerformed) {
     const extractedTime = extractTimeWindow(text);
     const extractedDate = extractAvailabilityDate(text) || (lower.includes('tomorrow') ? 'Tomorrow' : (lower.includes('today') ? 'Today' : null));
 
-    if (existingWorker && (extractedTime || extractedDate)) {
-        const dateStr = extractedDate || 'Tomorrow';
-        const startTime = extractedTime ? extractedTime.startTime : '09:00 AM';
-        const endTime = extractedTime ? extractedTime.endTime : '05:00 PM';
+    if (existingWorker && (extractedTime || extractedDate || draft.pending_availability)) {
+        // An explicit new availability statement replaces an abandoned draft
+        // from an earlier turn/session; it is never interpreted as its end.
+        const startsNewAvailability = /\b(available|availability|working hours|work from)\b/i.test(lower);
+        const pending = startsNewAvailability ? {} : (draft.pending_availability || {});
+        if (startsNewAvailability) draft.pending_availability = null;
+        const dateStr = extractedDate || pending.date || 'Tomorrow';
 
-        const saveRes = DB.setWorkerAvailabilitySlot({
-            workerId: existingWorker.id,
-            workerPhone: existingWorker.phone,
-            trade: existingWorker.trade,
-            dateStr,
-            startTime,
-            endTime,
-            isAvailable: true
-        });
+        if (!extractedTime) {
+            draft.pending_availability = { ...pending, date: dateStr };
+            draft.last_asked_field = 'availability_start';
+            return { spokenResponse: 'What time will you start being available?', detectedIntent: 'ask_availability_start' };
+        }
 
-        actionsPerformed.push(`Updated availability for worker ${existingWorker.name}: ${dateStr} ${startTime}-${endTime}`);
+        // A one-point expression ("10 o'clock" / "10 AM") is a start time,
+        // not an availability range. Preserve it and ask only for the end.
+        if (extractedTime.startTime === extractedTime.endTime && !pending.startTime) {
+            draft.pending_availability = {
+                date: dateStr, startTime: extractedTime.startTime, startDisplay: extractedTime.startDisplay
+            };
+            draft.last_asked_field = 'availability_end';
+            return { spokenResponse: `You will start at ${extractedTime.startDisplay}. Until what time will you be available?`, detectedIntent: 'ask_availability_end' };
+        }
 
+        const startTime = pending.startTime || extractedTime.startTime;
+        const startDisplay = pending.startDisplay || extractedTime.startDisplay;
+        const endTime = pending.startTime ? extractedTime.startTime : extractedTime.endTime;
+        const endDisplay = pending.startTime ? extractedTime.startDisplay : extractedTime.endDisplay;
+        draft.pending_availability = { date: dateStr, startTime, endTime, startDisplay, endDisplay };
+        draft.awaiting_availability_confirmation = true;
+        draft.last_asked_field = 'availability_confirmation';
         return {
-            spokenResponse: `Done. Your availability has been updated for ${dateStr} from ${startTime} to ${endTime}.`,
-            detectedIntent: 'update_availability',
-            toolExecuted: 'updateWorkerAvailability',
-            toolResult: saveRes
+            spokenResponse: `Just to confirm: you are available ${dateStr} from ${startDisplay} to ${endDisplay}. Shall I save this?`,
+            detectedIntent: 'ask_availability_confirmation'
         };
     }
 
@@ -2914,4 +2983,3 @@ module.exports = {
     AI_TOOLS,
     sessionManager
 };
-

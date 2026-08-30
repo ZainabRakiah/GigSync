@@ -49,6 +49,15 @@ module.exports = async (req, res) => {
     const authHeader = req.headers['authorization'] || '';
     const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : null;
 
+    // Vercel functions do not share a filesystem. Hydrate the local query cache
+    // from the authenticated Firestore source before any CRUD or availability
+    // decision is made. A short in-instance cache prevents repeat reads during
+    // a normal voice conversation.
+    if (process.env.VERCEL && !pathname.endsWith('/events')) {
+        try { await DB.hydrateFromFirestore(); }
+        catch (err) { console.error('[Firestore Hydration Error]', err.message); }
+    }
+
     /* ----------------------------------------------------------------------
        0. LIVE CHANGE STREAM (Server-Sent Events)
        ---------------------------------------------------------------------- */
@@ -528,13 +537,22 @@ module.exports = async (req, res) => {
        4. FIREBASE CLOUD FIRESTORE ENDPOINTS
        ---------------------------------------------------------------------- */
 
+    // Firebase configuration and bulk migration are privileged operations.
+    // They must never be callable anonymously from the public website.
+    const isFirebaseAdmin = () => {
+        const session = getAuthSession(req);
+        return Boolean(session && session.role === 'admin');
+    };
+
     // GET /api/firebase/config
     if (pathname.endsWith('/firebase/config') && req.method === 'GET') {
+        if (!isFirebaseAdmin()) return sendJSON(res, { status: 'error', message: 'Administrator authorization required.' }, 403);
         return sendJSON(res, { status: 'success', config: FirebaseSync.getConfig() });
     }
 
     // POST /api/firebase/config
     if (pathname.endsWith('/firebase/config') && req.method === 'POST') {
+        if (!isFirebaseAdmin()) return sendJSON(res, { status: 'error', message: 'Administrator authorization required.' }, 403);
         const body = await parseBody(req);
         const updated = FirebaseSync.saveConfig(body);
         return sendJSON(res, { status: 'success', message: 'Firebase config updated.', config: updated });
@@ -542,6 +560,7 @@ module.exports = async (req, res) => {
 
     // POST /api/firebase/sync
     if (pathname.endsWith('/firebase/sync') && req.method === 'POST') {
+        if (!isFirebaseAdmin()) return sendJSON(res, { status: 'error', message: 'Administrator authorization required.' }, 403);
         const syncResult = await DB.triggerFullFirebaseSync();
         return sendJSON(res, {
             status: 'success',

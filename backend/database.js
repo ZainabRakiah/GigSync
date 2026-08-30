@@ -16,6 +16,24 @@ const crypto = require('node:crypto');
 
 const FirebaseSync = require('./firebase');
 
+// Voice turns use labels such as "Tomorrow" while calendar bookings use ISO
+// dates. Store and compare one canonical key so those two entry points agree.
+function normalizeDateKey(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return raw;
+    const lower = raw.toLowerCase();
+    const base = new Date();
+    base.setHours(0, 0, 0, 0);
+    if (lower === 'today') return base.toISOString().slice(0, 10);
+    if (lower === 'tomorrow') {
+        base.setDate(base.getDate() + 1);
+        return base.toISOString().slice(0, 10);
+    }
+    if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+    const parsed = new Date(raw);
+    return Number.isNaN(parsed.getTime()) ? raw : parsed.toISOString().slice(0, 10);
+}
+
 let db = null;
 let useMemoryFallback = false;
 
@@ -313,6 +331,8 @@ function mirrorToFirebase({ worker = null, slot = null, job = null, customer = n
    ========================================================================== */
 
 const changeListeners = new Set();
+let lastCloudHydrationAt = 0;
+let cloudHydrationInFlight = null;
 
 function emitChange(entity, detail = {}) {
     if (changeListeners.size === 0) return;
@@ -337,6 +357,64 @@ const DB = {
         return () => changeListeners.delete(listener);
     },
 
+    // Serverless instances have isolated local SQLite files. Before serving a
+    // Vercel request, rebuild their working cache from Firestore so reads,
+    // availability checks, bookings and cancellations all share one source.
+    async hydrateFromFirestore() {
+        if (!FirebaseSync.isServerAuthenticated || !FirebaseSync.isServerAuthenticated()) return { skipped: true, reason: 'Firebase service account is not configured' };
+        if (Date.now() - lastCloudHydrationAt < 5000) return { cached: true };
+        if (cloudHydrationInFlight) return cloudHydrationInFlight;
+        cloudHydrationInFlight = (async () => {
+            const [users, sessions, workers, availability, jobs] = await Promise.all([
+                FirebaseSync.listCollectionData('users'), FirebaseSync.listCollectionData('sessions'),
+                FirebaseSync.listCollectionData('workers'), FirebaseSync.listCollectionData('worker_availability'), FirebaseSync.listCollectionData('jobs')
+            ]);
+            if (!db) return { users: users.length, sessions: sessions.length, workers: workers.length, availability: availability.length, jobs: jobs.length };
+
+            for (const user of users) {
+                if (!user.phone || !user.role || !user.password_hash) continue;
+                const existing = this.getUserByPhone(user.phone);
+                if (existing) db.prepare('UPDATE users SET name=?, email=?, role=?, password_hash=?, city=?, area=? WHERE phone=?').run(user.name || 'User', user.email || null, user.role, user.password_hash, user.city || 'Ramanagara', user.area || 'Town', user.phone);
+                else db.prepare('INSERT INTO users (name, phone, email, role, password_hash, city, area) VALUES (?, ?, ?, ?, ?, ?, ?)').run(user.name || 'User', user.phone, user.email || null, user.role, user.password_hash, user.city || 'Ramanagara', user.area || 'Town');
+            }
+            for (const session of sessions) {
+                if (!session.token || !session.phone || !session.role) continue;
+                const user = this.getUserByPhone(session.phone);
+                if (!user) continue;
+                db.prepare('INSERT OR REPLACE INTO sessions (token, user_id, phone, role) VALUES (?, ?, ?, ?)').run(session.token, user.id, session.phone, session.role);
+            }
+
+            for (const w of workers) {
+                if (!w.phone) continue;
+                const existing = this.getWorkerByPhone(w.phone);
+                const values = [w.name || 'Worker', w.trade || 'Skilled Specialist', w.service || String(w.trade || 'general').toLowerCase(), w.skills || '', w.tools || 'Standard tool kit', Number(w.rating || 5), Number(w.price || 300), Number(w.jobs_completed || 0), w.is_available === false ? 0 : 1, w.is_verified === false ? 0 : 1, w.city || 'Ramanagara', w.area || 'Town', w.service_areas || `${w.city || 'Ramanagara'}, Nearby Areas`, w.about || '', w.phone];
+                if (existing) {
+                    db.prepare(`UPDATE workers SET name=?, trade=?, service=?, skills=?, tools=?, rating=?, price=?, jobs_completed=?, is_available=?, is_verified=?, city=?, area=?, service_areas=?, about=? WHERE phone=?`).run(...values);
+                } else {
+                    const initials = (w.name || 'WK').split(' ').map(x => x[0]).join('').slice(0, 2).toUpperCase();
+                    db.prepare(`INSERT INTO workers (name, phone, trade, service, skills, tools, rating, price, jobs_completed, is_available, is_verified, initials, city, area, service_areas, about) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(w.name || 'Worker', w.phone, w.trade || 'Skilled Specialist', w.service || String(w.trade || 'general').toLowerCase(), w.skills || '', w.tools || 'Standard tool kit', Number(w.rating || 5), Number(w.price || 300), Number(w.jobs_completed || 0), w.is_available === false ? 0 : 1, w.is_verified === false ? 0 : 1, initials, w.city || 'Ramanagara', w.area || 'Town', w.service_areas || `${w.city || 'Ramanagara'}, Nearby Areas`, w.about || '');
+                }
+            }
+            for (const slot of availability) {
+                const worker = slot.workerPhone ? this.getWorkerByPhone(slot.workerPhone) : null;
+                if (!worker || !slot.dateStr || !slot.startTime || !slot.endTime) continue;
+                let daysOfWeek = [];
+                try { daysOfWeek = Array.isArray(slot.daysOfWeek) ? slot.daysOfWeek : JSON.parse(slot.daysOfWeek || '[]'); } catch (_) {}
+                this.setWorkerAvailabilitySlot({ workerId: worker.id, workerPhone: worker.phone, trade: slot.trade || worker.trade, dateStr: slot.dateStr, startTime: slot.startTime, endTime: slot.endTime, isAvailable: slot.isAvailable !== false, notes: slot.notes || '', pattern: slot.pattern || 'once', daysOfWeek, rangeStart: slot.rangeStart || slot.dateStr, rangeEnd: slot.rangeEnd || null });
+            }
+            for (const job of jobs) {
+                if (!job.jobId || !job.customer_phone) continue;
+                const worker = job.worker_phone ? this.getWorkerByPhone(job.worker_phone) : null;
+                const existing = this.getJobById(job.jobId);
+                if (!existing) this.createJob({ id: job.jobId, customer_phone: job.customer_phone, customer_name: job.customer_name || 'Customer', worker_id: worker ? worker.id : null, worker_phone: worker ? worker.phone : null, worker_name: job.worker_name || 'Broadcasting', service: job.service || 'General Service', problem_description: job.problem_description || '', location: job.location || 'Town Area', city: job.city || 'Ramanagara', requested_date: job.requested_date || 'Today', requested_time: job.requested_time || 'Immediate', budget: job.budget || '₹350', status: job.status || 'Requested', payment_method: job.payment_method || 'Cash' });
+                else this.updateJobStatus(job.jobId, job.status || existing.status, worker ? worker.id : null, worker ? worker.name : null, worker ? worker.phone : null);
+            }
+            lastCloudHydrationAt = Date.now();
+            return { users: users.length, sessions: sessions.length, workers: workers.length, availability: availability.length, jobs: jobs.length };
+        })();
+        try { return await cloudHydrationInFlight; } finally { cloudHydrationInFlight = null; }
+    },
+
     // ---------------- AUTH & USER OPERATIONS ----------------
     createUser({ name, phone, email, role, password, city = 'Ramanagara', area = 'Town' }) {
         const cleanPhone = (phone || '').replace(/\D/g, '');
@@ -346,6 +424,7 @@ const DB = {
             const userId = memoryStore.users.length + 1;
             const user = { id: userId, name, phone: cleanPhone, email: email || null, role, password_hash: pHash, city, area, created_at: new Date().toISOString() };
             memoryStore.users.push(user);
+            FirebaseSync.syncUser(user).catch(e => console.warn('[Firebase Sync Error]:', e));
             if (role === 'worker') {
                 const initials = name.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase() || 'WK';
                 const worker = { id: memoryStore.workers.length + 1, user_id: userId, name, phone: cleanPhone, trade: 'General Specialist', service: 'general', initials, city, area, service_areas: `${city}, Nearby Areas`, rating: 5.0, km: 1.5, jobs_completed: 0, price: 300, is_available: 1, is_verified: 1, skills: '', tools: 'Standard tool kit', experience_years: 2, about: '' };
@@ -395,7 +474,9 @@ const DB = {
             }
         }
 
-        return this.getUserById(userId);
+        const createdUser = this.getUserById(userId);
+        FirebaseSync.syncUser(createdUser).catch(e => console.warn('[Firebase Sync Error]:', e));
+        return createdUser;
     },
 
     getUserByPhone(phone) {
@@ -459,6 +540,7 @@ const DB = {
         const token = crypto.randomBytes(24).toString('hex');
         if (!db) {
             memoryStore.sessions[token] = user;
+            FirebaseSync.syncSession({ token, user_id: user.id, phone: user.phone, role: user.role }).catch(e => console.warn('[Firebase Sync Error]:', e));
             const extraProfile = user.role === 'worker' ? memoryStore.workers.find(w => w.user_id === user.id || w.phone === user.phone) : memoryStore.customers.find(c => c.user_id === user.id || c.phone === user.phone);
             return {
                 token,
@@ -476,6 +558,7 @@ const DB = {
         }
 
         db.prepare('INSERT INTO sessions (token, user_id, phone, role) VALUES (?, ?, ?, ?)').run(token, user.id, user.phone, user.role);
+        FirebaseSync.syncSession({ token, user_id: user.id, phone: user.phone, role: user.role }).catch(e => console.warn('[Firebase Sync Error]:', e));
 
         let extraProfile = null;
         if (user.role === 'worker') {
@@ -981,6 +1064,9 @@ const DB = {
     // ---------------- SCHEDULE & CONFLICT CHECK ----------------
     setWorkerAvailabilitySlot({ workerId, workerPhone, trade, dateStr, startTime, endTime, isAvailable = true, notes = '',
                                   pattern = 'once', daysOfWeek = [], rangeStart = null, rangeEnd = null } = {}, options = {}) {
+        dateStr = normalizeDateKey(dateStr);
+        rangeStart = normalizeDateKey(rangeStart || dateStr);
+        rangeEnd = rangeEnd ? normalizeDateKey(rangeEnd) : null;
         // Merge top-level fields into options so the SQLite branch can read them uniformly
         options = { pattern, daysOfWeek, rangeStart: rangeStart || dateStr, rangeEnd, ...options };
 
@@ -1226,6 +1312,7 @@ const DB = {
      * in the given city.  Used by the customer calendar booking flow.
      */
     getWorkersAvailableOnDate(dateStr, city = null) {
+        dateStr = normalizeDateKey(dateStr);
         const from = new Date(dateStr);
         const to   = new Date(dateStr);
 
@@ -1396,31 +1483,27 @@ const DB = {
         }
 
         const reqMin = parseTimeToMinutes(requestedTime);
-        const reqDateStr = String(requestedDate || '').trim();
+        const reqDateStr = normalizeDateKey(requestedDate);
 
         if (!db) {
             // 1. Check availability slot
             const phone = memoryStore.workers.find(w => w.id === Number(workerId))?.phone || String(workerId).replace(/\D/g, '');
             const slots = (phone && memoryStore.availability[phone]) ? memoryStore.availability[phone].filter(s => s.is_available === 1) : [];
 
-            let matchingSlot = null;
+            const matchingSlots = [];
             for (const s of slots) {
                 if (String(s.date_str).toLowerCase() === reqDateStr.toLowerCase()) {
-                    matchingSlot = s;
-                    break;
+                    matchingSlots.push(s);
+                    continue;
                 }
                 const covered = this.expandAvailabilityPattern(s, reqDateStr, reqDateStr);
                 if (covered.includes(reqDateStr)) {
-                    matchingSlot = s;
-                    break;
+                    matchingSlots.push(s);
                 }
             }
 
-            if (!matchingSlot) return 'NotAvailable';
-
-            const startMin = parseTimeToMinutes(matchingSlot.start_time);
-            const endMin = parseTimeToMinutes(matchingSlot.end_time);
-            if (reqMin < startMin || reqMin > endMin) return 'OutsideHours';
+            if (!matchingSlots.length) return 'NotAvailable';
+            if (!matchingSlots.some(s => reqMin >= parseTimeToMinutes(s.start_time) && reqMin <= parseTimeToMinutes(s.end_time))) return 'OutsideHours';
 
             // 2. Check conflicting jobs
             const conflict = memoryStore.jobs.find(j => {
@@ -1443,24 +1526,20 @@ const DB = {
             ORDER BY updated_at DESC, id DESC
         `).all(Number(workerId), wPhone);
 
-        let matchingSlot = null;
+        const matchingSlots = [];
         for (const s of allSlots) {
             if (s.date_str && s.date_str.toLowerCase() === reqDateStr.toLowerCase()) {
-                matchingSlot = s;
-                break;
+                matchingSlots.push(s);
+                continue;
             }
             const covered = this.expandAvailabilityPattern(s, reqDateStr, reqDateStr);
             if (covered.includes(reqDateStr)) {
-                matchingSlot = s;
-                break;
+                matchingSlots.push(s);
             }
         }
 
-        if (!matchingSlot) return 'NotAvailable';
-        
-        const startMin = parseTimeToMinutes(matchingSlot.start_time);
-        const endMin = parseTimeToMinutes(matchingSlot.end_time);
-        if (reqMin < startMin || reqMin > endMin) return 'OutsideHours';
+        if (!matchingSlots.length) return 'NotAvailable';
+        if (!matchingSlots.some(s => reqMin >= parseTimeToMinutes(s.start_time) && reqMin <= parseTimeToMinutes(s.end_time))) return 'OutsideHours';
 
         // 2. Check conflicting jobs
         const jobs = db.prepare(`
@@ -1468,7 +1547,7 @@ const DB = {
             WHERE (worker_id = ? OR worker_phone = ?)
               AND requested_date = ?
               AND status IN ('Confirmed', 'Accepted', 'On the Way', 'In Progress')
-        `).all(Number(workerId), wPhone, requestedDate);
+        `).all(Number(workerId), wPhone, reqDateStr);
 
         for (const j of jobs) {
             const jMin = parseTimeToMinutes(j.requested_time);
@@ -1482,6 +1561,7 @@ const DB = {
 
     // ---------------- JOB & BOOKING OPERATIONS ----------------
     createJob(jobData) {
+        jobData = { ...jobData, requested_date: normalizeDateKey(jobData.requested_date || 'Today') };
         const jobId = jobData.id || generateJobId();
         const priceNum = parseInt(String(jobData.budget || '350').replace(/\D/g, ''), 10) || 350;
         const cleanCustomerPhone = (jobData.customer_phone ? String(jobData.customer_phone).replace(/\D/g, '') : '') || '9876543210';
@@ -1912,7 +1992,13 @@ const DB = {
     async triggerFullFirebaseSync() {
         const allWorkers = this.getAllWorkers();
         const allJobs = this.getAllJobs();
-        const results = { workersSynced: 0, jobsSynced: 0 };
+        const allUsers = db ? db.prepare('SELECT * FROM users').all() : memoryStore.users;
+        const results = { usersSynced: 0, workersSynced: 0, jobsSynced: 0 };
+
+        for (const user of allUsers) {
+            await FirebaseSync.syncUser(user);
+            results.usersSynced++;
+        }
 
         for (const w of allWorkers) {
             await FirebaseSync.syncWorker(w);

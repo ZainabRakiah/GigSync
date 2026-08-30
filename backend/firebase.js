@@ -6,6 +6,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const https = require('node:https');
+const crypto = require('node:crypto');
 
 const CONFIG_PATH = path.join(__dirname, '..', 'config', 'firebase', 'firebase_config.json');
 const FALLBACK_CONFIG_PATH = path.join(__dirname, '..', 'firebase_config.json');
@@ -27,14 +28,61 @@ const activeConfigPath = fs.existsSync(CONFIG_PATH) ? CONFIG_PATH : (fs.existsSy
 if (activeConfigPath) {
     try {
         const fileContent = JSON.parse(fs.readFileSync(activeConfigPath, 'utf8'));
-        firebaseConfig = { ...firebaseConfig, ...fileContent };
+        // Do not let placeholder values committed for local development erase
+        // real Vercel environment variables (the old empty apiKey did exactly
+        // that, leaving production writes anonymous and rejected).
+        const configuredValues = Object.fromEntries(
+            Object.entries(fileContent).filter(([, value]) => value !== '' && value !== null && value !== undefined)
+        );
+        firebaseConfig = { ...firebaseConfig, ...configuredValues };
     } catch (e) {
         console.warn('[Firebase] Could not parse firebase config:', e.message);
     }
 }
 
+let cachedAccessToken = null;
+let cachedAccessTokenExpiry = 0;
+
+function base64Url(value) {
+    return Buffer.from(value).toString('base64').replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+}
+
+// Vercel stores the service-account JSON as one encrypted environment value.
+// Using an OAuth token here makes every Firestore operation server-authenticated
+// rather than relying on public Firestore rules or a browser API key.
+async function getServiceAccountAccessToken() {
+    if (cachedAccessToken && Date.now() < cachedAccessTokenExpiry) return cachedAccessToken;
+    const raw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+    if (!raw) return null;
+    let account;
+    try { account = JSON.parse(raw); } catch (_) { throw new Error('FIREBASE_SERVICE_ACCOUNT_JSON is not valid JSON'); }
+    if (!account.client_email || !account.private_key) throw new Error('Firebase service account is missing client_email or private_key');
+    const now = Math.floor(Date.now() / 1000);
+    const header = base64Url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
+    const claims = base64Url(JSON.stringify({
+        iss: account.client_email, scope: 'https://www.googleapis.com/auth/datastore',
+        aud: 'https://oauth2.googleapis.com/token', iat: now, exp: now + 3600
+    }));
+    const unsigned = `${header}.${claims}`;
+    const signature = crypto.sign('RSA-SHA256', Buffer.from(unsigned), account.private_key)
+        .toString('base64').replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+    const body = new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion: `${unsigned}.${signature}` }).toString();
+    const token = await new Promise((resolve, reject) => {
+        const req = https.request({ hostname: 'oauth2.googleapis.com', path: '/token', method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body) } }, res => {
+            let out = ''; res.on('data', c => out += c); res.on('end', () => {
+                try { const parsed = JSON.parse(out); parsed.access_token ? resolve(parsed) : reject(new Error(parsed.error_description || 'Firebase OAuth token was rejected')); } catch (_) { reject(new Error('Firebase OAuth returned invalid JSON')); }
+            });
+        });
+        req.on('error', reject); req.write(body); req.end();
+    });
+    cachedAccessToken = token.access_token;
+    cachedAccessTokenExpiry = Date.now() + Math.max(60, Number(token.expires_in || 3600) - 120) * 1000;
+    return cachedAccessToken;
+}
+
 // REST API Helper for Cloud Firestore
-function firestoreRequest(collection, documentId, method = 'PATCH', documentData = {}) {
+async function firestoreRequest(collection, documentId, method = 'PATCH', documentData = {}) {
+    const accessToken = await getServiceAccountAccessToken();
     return new Promise((resolve) => {
         if (!firebaseConfig.projectId) {
             return resolve({ status: 'skipped', ok: false, message: 'No projectId configured', collection, documentId });
@@ -59,7 +107,7 @@ function firestoreRequest(collection, documentId, method = 'PATCH', documentData
             }
         }
 
-        const apiKeyParam = firebaseConfig.apiKey ? `?key=${encodeURIComponent(firebaseConfig.apiKey)}` : '';
+        const apiKeyParam = !accessToken && firebaseConfig.apiKey ? `?key=${encodeURIComponent(firebaseConfig.apiKey)}` : '';
         const isWrite = method !== 'GET';
         const bodyData = isWrite ? JSON.stringify({ fields: firestoreFields }) : null;
         const pathName = `/v1/projects/${projectId}/databases/(default)/documents/${collection}/${encodeURIComponent(documentId)}${apiKeyParam}`;
@@ -70,8 +118,8 @@ function firestoreRequest(collection, documentId, method = 'PATCH', documentData
             path: pathName,
             method: method,
             headers: isWrite
-                ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(bodyData) }
-                : { 'Content-Type': 'application/json' }
+                ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(bodyData), ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}) }
+                : { 'Content-Type': 'application/json', ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}) }
         };
 
         const req = https.request(options, (res) => {
@@ -120,6 +168,8 @@ function decodeFirestoreDocument(doc) {
 }
 
 const localSnapshotStore = {
+    users: {},
+    sessions: {},
     workers: {},
     customers: {},
     jobs: {},
@@ -127,6 +177,9 @@ const localSnapshotStore = {
 };
 
 const FirebaseSync = {
+    isServerAuthenticated() {
+        return Boolean(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+    },
     getConfig() {
         return firebaseConfig;
     },
@@ -157,12 +210,29 @@ const FirebaseSync = {
         return { ok: false, statusCode: res.statusCode || 0, collection, documentId: docId, data: null, message: res.message };
     },
 
+    async syncUser(user) {
+        if (!user || !user.phone) return { status: 'skipped', ok: false, message: 'No user supplied.' };
+        const docId = `user_${user.phone}`;
+        const payload = { name: user.name, phone: user.phone, email: user.email || '', role: user.role, password_hash: user.password_hash || '', city: user.city || 'Ramanagara', area: user.area || 'Town', updated_at: new Date().toISOString() };
+        localSnapshotStore.users[docId] = payload;
+        return firestoreRequest('users', docId, 'PATCH', payload);
+    },
+
+    async syncSession(session) {
+        if (!session || !session.token) return { status: 'skipped', ok: false, message: 'No session supplied.' };
+        const payload = { token: session.token, user_id: Number(session.user_id || 0), phone: session.phone || '', role: session.role || 'customer', created_at: session.created_at || new Date().toISOString() };
+        localSnapshotStore.sessions[`session_${session.token}`] = payload;
+        return firestoreRequest('sessions', `session_${session.token}`, 'PATCH', payload);
+    },
+
     // 1. Sync Worker to Firestore 'workers' collection
     async syncWorker(worker) {
         if (!worker || !worker.id) {
             return { status: 'skipped', ok: false, message: 'No worker record supplied to syncWorker.' };
         }
-        const docId = `worker_${worker.id}_${worker.phone}`;
+        // Phone is the platform's stable worker identity; SQLite ids are not
+        // stable across Vercel instances.
+        const docId = `worker_${worker.phone}`;
         const payload = {
             workerId: Number(worker.id),
             name: worker.name,
@@ -199,7 +269,7 @@ const FirebaseSync = {
         if (!customer || !customer.id) {
             return { status: 'skipped', ok: false, message: 'No customer record supplied to syncCustomer.' };
         }
-        const docId = `customer_${customer.id}_${customer.phone}`;
+        const docId = `customer_${customer.phone}`;
         const payload = {
             customerId: Number(customer.id),
             name: customer.name,
@@ -232,6 +302,7 @@ const FirebaseSync = {
             customer_phone: job.customer_phone,
             customer_name: job.customer_name,
             worker_id: job.worker_id ? Number(job.worker_id) : 0,
+            worker_phone: job.worker_phone || '',
             worker_name: job.worker_name || 'Broadcasting',
             service: job.service,
             problem_description: job.problem_description,
@@ -263,7 +334,11 @@ const FirebaseSync = {
         if (!slot || !slot.id) {
             return { status: 'skipped', ok: false, message: 'No availability slot supplied to syncAvailability.' };
         }
-        const docId = `avail_${slot.id}_${slot.worker_phone}`;
+        // SQLite row ids are local to a Vercel instance. A stable business key
+        // prevents each cold start from creating a duplicate Firestore slot.
+        const safeDate = String(slot.date_str || 'unknown').replace(/[^a-zA-Z0-9_-]/g, '_');
+        const safePattern = String(slot.pattern || 'once').replace(/[^a-zA-Z0-9_-]/g, '_');
+        const docId = `avail_${slot.worker_phone}_${safeDate}_${safePattern}`;
         const payload = {
             slotId: Number(slot.id),
             workerId: slot.worker_id ? Number(slot.worker_id) : 0,
@@ -274,6 +349,10 @@ const FirebaseSync = {
             endTime: slot.end_time,
             isAvailable: Boolean(slot.is_available),
             notes: slot.notes || '',
+            pattern: slot.pattern || 'once',
+            daysOfWeek: slot.days_of_week || '[]',
+            rangeStart: slot.range_start || slot.date_str,
+            rangeEnd: slot.range_end || '',
             updated_at: new Date().toISOString()
         };
         localSnapshotStore.worker_availability[docId] = payload;
@@ -291,14 +370,16 @@ const FirebaseSync = {
     // 5. Clean / Delete Collections in Firestore
     async listDocuments(collection) {
         if (!firebaseConfig.projectId) return [];
-        const apiKeyParam = firebaseConfig.apiKey ? `?key=${encodeURIComponent(firebaseConfig.apiKey)}` : '';
+        const accessToken = await getServiceAccountAccessToken();
+        const apiKeyParam = !accessToken && firebaseConfig.apiKey ? `?key=${encodeURIComponent(firebaseConfig.apiKey)}` : '';
         const pathName = `/v1/projects/${firebaseConfig.projectId}/databases/(default)/documents/${collection}${apiKeyParam}`;
         return new Promise(resolve => {
             const req = https.request({
                 hostname: 'firestore.googleapis.com',
                 port: 443,
                 path: pathName,
-                method: 'GET'
+                method: 'GET',
+                headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {}
             }, (res) => {
                 let d = '';
                 res.on('data', c => d += c);
@@ -314,6 +395,11 @@ const FirebaseSync = {
             req.on('error', () => resolve([]));
             req.end();
         });
+    },
+
+    async listCollectionData(collection) {
+        const docs = await this.listDocuments(collection);
+        return docs.map(decodeFirestoreDocument).filter(Boolean);
     },
 
     async deleteDocument(collection, docId) {
@@ -336,11 +422,15 @@ const FirebaseSync = {
 
     async clearAllData() {
         localSnapshotStore.workers = {};
+        localSnapshotStore.users = {};
+        localSnapshotStore.sessions = {};
         localSnapshotStore.customers = {};
         localSnapshotStore.jobs = {};
         localSnapshotStore.worker_availability = {};
         await Promise.allSettled([
             this.clearCollection('workers'),
+            this.clearCollection('users'),
+            this.clearCollection('sessions'),
             this.clearCollection('worker_availability'),
             this.clearCollection('jobs'),
             this.clearCollection('customers')

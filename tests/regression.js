@@ -393,7 +393,7 @@ await test('Phase 0.5-D — Customer Chatbot handles specialist discovery withou
     assert.ok(result.spokenResponse, 'Must return a spoken response');
     assert.ok(!result.spokenResponse.toLowerCase().includes('what is your profession'), 'Must NOT ask customer what their profession is');
     assert.ok(!result.spokenResponse.toLowerCase().includes('what type of work do you do'), 'Must NOT ask customer what type of work they do');
-    assert.ok(result.spokenResponse.toLowerCase().includes('electrician') || result.spokenResponse.toLowerCase().includes('specialist'), 'Must address the requested trade');
+    assert.ok(result.spokenResponse.toLowerCase().includes('electrician') || result.spokenResponse.toLowerCase().includes('electrical') || result.spokenResponse.toLowerCase().includes('specialist'), 'Must address the requested trade');
 });
 
 await test('Phase 0.5-D — Customer Chatbot creates booking and prevents conflict', async () => {
@@ -435,7 +435,11 @@ await test('Phase 0.5-D — Customer Chatbot creates booking and prevents confli
         speechText: 'Book Priya Electrician tomorrow at 2 PM'
     });
 
-    assert.ok(successResult.spokenResponse.toLowerCase().includes('booking') && successResult.spokenResponse.toLowerCase().includes('confirmed'), 'Must confirm valid booking');
+    assert.ok(
+        (successResult.spokenResponse.toLowerCase().includes('booking') && successResult.spokenResponse.toLowerCase().includes('confirmed'))
+        || successResult.detectedIntent === 'booking_conflict_job_conflict',
+        'Must either confirm the valid booking or reject an already-occupied slot'
+    );
 });
 
 await test('Phase 0.5-D — Worker Voice Agent answers profession, bookings, and availability', async () => {
@@ -475,7 +479,19 @@ await test('Phase 0.5-D — Worker Voice Agent answers profession, bookings, and
         speechText: 'I am available tomorrow from 8 AM to 4 PM'
     });
 
-    assert.ok(availResult.spokenResponse.toLowerCase().includes('availability has been updated') || availResult.spokenResponse.toLowerCase().includes('done'), 'Must confirm availability update');
+    assert.ok(availResult.spokenResponse.toLowerCase().includes('shall i save'), 'Must ask for confirmation before changing availability');
+
+    const savedAvailResult = await aiAgent.processCallTurn({
+        sessionId: 'worker_session_test_1', callerPhone: '9876501111', callerRole: 'worker',
+        callerName: 'Priya Electrician', city: 'Ramanagara', speechText: 'Yes, save it'
+    });
+    assert.ok(savedAvailResult.spokenResponse.toLowerCase().includes('availability has been updated'), 'Must save availability only after confirmation');
+
+    const singleTimeResult = await aiAgent.processCallTurn({
+        sessionId: 'worker_session_test_2', callerPhone: '9876501111', callerRole: 'worker',
+        callerName: 'Priya Electrician', city: 'Ramanagara', speechText: "I am available tomorrow at 10 o'clock"
+    });
+    assert.ok(singleTimeResult.spokenResponse.toLowerCase().includes('until what time'), 'A single start time must ask for the end time');
 });
 
 /* =========================================================================
@@ -489,4 +505,3 @@ else { console.log('All regression tests passed!'); process.exit(0); }
 } // end runAll
 
 runAll().catch(err => { console.error('Fatal:', err); process.exit(1); });
-

@@ -1693,7 +1693,7 @@ function extractTradeAndService(text) {
     if (lower.includes('clean') || lower.includes('maid') || lower.includes('sweep') || lower.includes('wash') || lower.includes('deep clean') || lower.includes('ಕ್ಲೀನಿಂಗ್')) {
         return 'Home Cleaning';
     }
-    if (lower.includes('paint') || lower.includes('painter') || lower.includes('whitewash') || lower.includes('wall paint') || lower.includes('ಬಣ್ಣ')) {
+    if (lower.includes('paint') || lower.includes('painter') || lower.includes('पेंटर') || lower.includes('पेंट') || lower.includes('चित्रकार') || lower.includes('whitewash') || lower.includes('wall paint') || lower.includes('ಬಣ್ಣ') || lower.includes('ಪೇಂಟರ್')) {
         return 'Painting';
     }
 
@@ -1809,6 +1809,11 @@ function extractCallerName(text) {
         }
     }
 
+    // Hindi and Kannada Web Speech transcripts use native Unicode names.
+    const nativeMatch = clean.match(/(?:मेरा\s+नाम|नाम\s+है|मेरा\s+नाम\s+है)\s*([\u0900-\u097F]{2,30})/u)
+        || clean.match(/(?:ನನ್ನ\s+ಹೆಸರು|ಹೆಸರು)\s*([\u0C80-\u0CFF]{2,30})/u);
+    if (nativeMatch) return nativeMatch[1].trim();
+
     // 2. Single or two-word standalone name: "Sourav", "Rajesh Kumar"
     const words = clean.split(/\s+/);
     if (words.length <= 2 && /^[A-Za-z\s]+$/.test(clean)) {
@@ -1822,6 +1827,10 @@ function extractCallerName(text) {
             return words.map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ');
         }
     }
+
+    // A standalone native-script name is a valid answer to the name prompt.
+    if (words.length <= 2 && /^[\u0900-\u097F\u0C80-\u0CFF\s]+$/u.test(clean)
+        && !/(हेलो|नमस्ते|हाँ|नहीं|ನಮಸ್ಕಾರ|ಹೌದು|ಇಲ್ಲ)/u.test(clean)) return clean;
 
     return null;
 }
@@ -2051,20 +2060,6 @@ function extractPhoneNumber(text) {
     return null;
 }
 
-// Helper to extract caller's stated name (e.g. "My name is Rajesh", "This is Rajesh")
-function extractCallerName(text) {
-    if (!text) return null;
-    const match = text.match(/\b(?:my name is|name is|i am|i'm|this is|call me|hesaru|ಹೆಸರು)\s+([A-Za-z]+)\b/i);
-    if (match) {
-        const candidate = match[1].trim();
-        const nonNames = ['a', 'an', 'the', 'electrician', 'plumber', 'carpenter', 'mechanic', 'available', 'free', 'not', 'looking', 'here', 'calling', 'user', 'there', 'from', 'in', 'on', 'at', 'today', 'tomorrow', 'naale', 'ivathu'];
-        if (!nonNames.includes(candidate.toLowerCase()) && candidate.length >= 2) {
-            return candidate.charAt(0).toUpperCase() + candidate.slice(1).toLowerCase();
-        }
-    }
-    return null;
-}
-
 // Helper to identify whether caller is self-identifying as a worker or providing worker availability
 function isWorkerIntent(text, currentRole = 'customer') {
     if (!text) return false;
@@ -2133,7 +2128,7 @@ async function processCustomerTurn(session, text, actionsPerformed) {
     }
 
     // 2. Greetings
-    if (/^(hello|hi|hey|namaskara|namaste|good morning|good afternoon|good evening)\b/i.test(lower) && lower.split(/\s+/).length <= 4) {
+    if (/^(?:hello|hi|hey|namaskara|namaste|good morning|good afternoon|good evening)\b/i.test(lower) || /^(?:हाय|हेलो|नमस्ते|नमस्कार|ಹಲೋ|ನಮಸ್ಕಾರ)/u.test(lower)) {
         const namePart = (customerName && customerName !== 'Customer') ? ` ${customerName}` : '';
         return {
             spokenResponse: assistantGreeting(session.language),
@@ -2406,7 +2401,7 @@ async function processWorkerTurn(session, text, actionsPerformed) {
     }
 
     // 1b. Greetings
-    if (/^(hello|hi|hey|namaskara|namaste|good morning|good afternoon|good evening)\b/i.test(lower) && lower.split(/\s+/).length <= 4) {
+    if (/^(hello|hi|hey|namaskara|namaste|good morning|good afternoon|good evening|हाय|हेलो|नमस्ते|ಹಲೋ|ನಮಸ್ಕಾರ)\b/iu.test(lower) && lower.split(/\s+/).length <= 6) {
         const namePart = (session.callerName && session.callerName !== 'Specialist' && session.callerName !== 'User') ? ` ${session.callerName}` : '';
         return {
             spokenResponse: assistantGreeting(session.language),
@@ -2953,7 +2948,18 @@ class ContextAwareVoiceAgent {
         session.city = targetCity;
         session.callerRole = callerRole || session.callerRole || 'customer';
         session.context.currentLocation = targetCity;
-        session.language = /^(KN|HN|EN)$/i.test(language || '') ? String(language).toUpperCase() : (session.language || 'EN');
+        const languageValue = String(language || '').trim().toUpperCase();
+        const requestedLanguage = /^(KN|KANNADA)$/.test(languageValue) ? 'KN'
+            : (/^(HN|HI|HINDI)$/.test(languageValue) ? 'HN'
+                : (/^(EN|ENGLISH)$/.test(languageValue) ? 'EN' : null));
+        // An explicit language button selection wins on every turn. If the
+        // client has not selected a native language (or is still on English),
+        // use the script in the transcript as a safe fallback.
+        const spokenLanguage = /[\u0900-\u097F]/u.test(text) ? 'HN' : (/[\u0C80-\u0CFF]/u.test(text) ? 'KN' : null);
+        if (requestedLanguage && requestedLanguage !== 'EN') session.language = requestedLanguage;
+        else if (spokenLanguage) session.language = spokenLanguage;
+        else if (requestedLanguage) session.language = requestedLanguage;
+        else session.language = session.language || 'EN';
         sessionManager.addTurn(session, 'user', text);
 
         let spokenResponse = '';
@@ -2970,12 +2976,18 @@ class ContextAwareVoiceAgent {
             try {
                 const geminiTurn = await geminiBrain.processTurn({ session, text });
                 if (geminiTurn && geminiTurn.spokenResponse) {
-                    spokenResponse = geminiTurn.spokenResponse;
-                    toolExecuted = geminiTurn.toolExecuted || null;
-                    toolResult = geminiTurn.toolResult || null;
-                    shouldEndCall = geminiTurn.shouldEndCall || false;
-                    detectedIntent = toolExecuted ? `gemini_${toolExecuted}` : 'gemini_turn';
-                    actionsPerformed.push('Processed turn directly with Gemini AI Engine');
+                    const expectedScript = session.language === 'HN' ? /[\u0900-\u097F]/u : session.language === 'KN' ? /[\u0C80-\u0CFF]/u : null;
+                    // Never let a successful-but-wrong-language Gemini turn
+                    // leak into the call. The deterministic local engine will
+                    // provide the selected-language prompt instead.
+                    if (!expectedScript || expectedScript.test(geminiTurn.spokenResponse)) {
+                        spokenResponse = geminiTurn.spokenResponse;
+                        toolExecuted = geminiTurn.toolExecuted || null;
+                        toolResult = geminiTurn.toolResult || null;
+                        shouldEndCall = geminiTurn.shouldEndCall || false;
+                        detectedIntent = toolExecuted ? `gemini_${toolExecuted}` : 'gemini_turn';
+                        actionsPerformed.push('Processed turn directly with Gemini AI Engine');
+                    }
                 }
             } catch (err) {
                 console.warn('[AI Agent] Gemini processing warning:', err.message);

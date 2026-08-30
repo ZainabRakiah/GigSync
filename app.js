@@ -2439,7 +2439,11 @@ let turnSilenceTimer = null;
 let currentTurnTranscript = '';
 let currentInterimTranscript = '';
 // A call should turn around quickly after the caller stops speaking.
-const TURN_SILENCE_TIMEOUT_MS = 2000;
+// Fast call-style turn taking: finalize shortly after the browser reports that
+// speech stopped. The browser's speech-end event is already a natural pause
+// signal, so a short debounce keeps the complete final transcript without a
+// multi-second wait.
+const TURN_SILENCE_TIMEOUT_MS = 650;
 
 function setVoiceAgentState(stateKey, labelText) {
     const badge = document.getElementById('vaLiveStateBadge');

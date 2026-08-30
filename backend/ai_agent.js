@@ -1144,7 +1144,10 @@ class GeminiConversationalBrain {
     // deterministic agent if Gemini cannot produce its first response quickly.
     async generateWithFallback(client, request) {
         let lastErr = null;
-        const timeoutMs = Math.min(Number(process.env.AI_RESPONSE_TIMEOUT_MS) || 1800, 1800);
+        // Keep the server-side brain inside a sub-second call-turn budget. If
+        // Gemini is busy, the deterministic database-first fallback answers
+        // immediately instead of holding the caller on the line.
+        const timeoutMs = Math.min(Number(process.env.AI_RESPONSE_TIMEOUT_MS) || 800, 800);
 
         for (let attempt = 0; attempt < 1; attempt++) {
             const idx = (this.modelIndex + attempt) % this.modelChain.length;

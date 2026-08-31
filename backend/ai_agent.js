@@ -1681,7 +1681,7 @@ function extractTradeAndService(text) {
     }
 
     // Single-word / Core Trade matchers (including common speech-to-text mishears & phonetic variants)
-    if (lower.includes('electric') || lower.includes('cliteration') || lower.includes('literation') || lower.includes('elctric') || lower.includes('lectrition') || lower.includes('electritian') || lower.includes('electrition') || lower.includes('electrishan') || lower.includes('fan') || lower.includes('switch') || lower.includes('wire') || lower.includes('current') || lower.includes('power') || lower.includes('bulb') || lower.includes('ಎಲೆಕ್ಟ್ರಿಷಿಯನ್')) {
+    if (lower.includes('electric') || lower.includes('cliteration') || lower.includes('literation') || lower.includes('elctric') || lower.includes('lectrition') || lower.includes('electritian') || lower.includes('electrition') || lower.includes('electrishan') || lower.includes('fan') || lower.includes('switch') || lower.includes('wire') || lower.includes('current') || lower.includes('power') || lower.includes('bulb') || lower.includes('ಎಲೆಕ್ಟ್ರಿಷಿಯನ್') || lower.includes('इलेक्ट्रिशियन') || lower.includes('इलेक्ट्रीशियन') || lower.includes('बिजली')) {
         return 'Electrical';
     }
     if (lower.includes('plumb') || lower.includes('plamber') || lower.includes('plamer') || lower.includes('pipe') || lower.includes('tap') || lower.includes('leak') || lower.includes('drain') || lower.includes('water') || lower.includes('प्लंबर') || lower.includes('नलसाज') || lower.includes('पाइप') || lower.includes('पानी') || lower.includes('ಪ್ಲಂಬರ್') || lower.includes('ಪ್ಲಂಬರ') || lower.includes('ಪ್ಲಂಬಾರ್') || lower.includes('ನೀರು')) {
@@ -1902,6 +1902,21 @@ function localizeCustomerFallback(message, language) {
     if (/No verified specialists found/i.test(message)) {
         return language === 'KN' ? 'ಈಗ ಯಾವುದೇ ಪರಿಶೀಲಿತ ತಜ್ಞರು ಲಭ್ಯವಿಲ್ಲ. ನಿಮಗೆ ಯಾವ ಸೇವೆ ಬೇಕು?' : 'अभी कोई सत्यापित विशेषज्ञ उपलब्ध नहीं है। आपको कौन सी सेवा चाहिए?';
     }
+    if (/^We have verified specialists in /i.test(message)) {
+        let body = message.replace(/^We have verified specialists in /i, '').replace(/Would you like me to book one for you\?$/i, '').trim();
+        if (language === 'KN') body = body.replace(/^Ramanagara:\s*/i, 'ರಾಮನಗರದಲ್ಲಿ ').replace(/Master Electrician|Electrician/gi, 'ಎಲೆಕ್ಟ್ರಿಷಿಯನ್').replace(/Plumber/gi, 'ಪ್ಲಂಬರ್').replace(/Carpenter/gi, 'ಕಾರ್ಪೆಂಟರ್').replace(/Painter/gi, 'ಪೇಂಟರ್').replace(/Tailor/gi, 'ಟೈಲರ್');
+        if (language === 'HN') body = body.replace(/^Ramanagara:\s*/i, 'रमनागरा में ').replace(/Master Electrician|Electrician/gi, 'इलेक्ट्रिशियन').replace(/Plumber/gi, 'प्लंबर').replace(/Carpenter/gi, 'बढ़ई').replace(/Painter/gi, 'पेंटर').replace(/Tailor/gi, 'दर्जी');
+        return language === 'KN'
+            ? `${body} ಪರಿಶೀಲಿತ ತಜ್ಞರಲ್ಲಿ ಯಾರನ್ನಾದರೂ ಬುಕ್ ಮಾಡಬೇಕೇ?`
+            : `${body} सत्यापित विशेषज्ञों में से किसी को बुक करूँ?`;
+    }
+    if (/^Just to confirm: you want to book /i.test(message) || /^Just to confirm: you want /i.test(message)) {
+        const body = message.replace(/^Just to confirm:\s*/i, '').replace(/Shall I go ahead and book this\?$/i, '').trim();
+        return language === 'KN' ? `ದೃಢೀಕರಿಸಿ: ${body}. ಇದನ್ನು ಬುಕ್ ಮಾಡಬೇಕೇ?` : `पुष्टि करें: ${body}। इसे बुक करूँ?`;
+    }
+    if (/^Done! (?:Your booking|Your service request)/i.test(message)) {
+        return language === 'KN' ? 'ನಿಮ್ಮ ಬುಕಿಂಗ್ ಯಶಸ್ವಿಯಾಗಿ ರಚಿಸಲಾಗಿದೆ. ವಿವರಗಳು ನಿಮ್ಮ ಡ್ಯಾಶ್‌ಬೋರ್ಡ್‌ನಲ್ಲಿ ಕಾಣಿಸುತ್ತವೆ.' : 'आपकी बुकिंग सफलतापूर्वक बन गई है। विवरण आपके डैशबोर्ड में दिखाई देंगे।';
+    }
     return message;
 }
 
@@ -1951,6 +1966,16 @@ function workerPrompt(session, key, english) {
 function extractTimeRange(text) {
     if (!text) return null;
     let lower = text.toLowerCase()
+        // Common speech-to-text Kannada/phonetic number words.
+        .replace(/ನೈನ್|ನಯನ್|ನೈನ/gu, '9')
+        .replace(/ಫೋರ್|ಫೋರು/gu, '4')
+        .replace(/ಎಯ್ಟ್|ಏಟ್/gu, '8')
+        .replace(/ಟೆನ್/gu, '10')
+        // Common Hindi number words when recognition returns words.
+        .replace(/नौ/gu, '9')
+        .replace(/चार/gu, '4')
+        .replace(/आठ/gu, '8')
+        .replace(/दस/gu, '10')
         // Web Speech commonly returns dotted a.m./p.m.; normalise before parsing.
         .replace(/\ba\s*\.?\s*m\s*\.?(?=\s|$)/g, 'am')
         .replace(/\bp\s*\.?\s*m\s*\.?(?=\s|$)/g, 'pm')
@@ -2078,6 +2103,11 @@ function extractTimeWindow(text) {
     if (clockOnly) {
         const hour = Number(clockOnly[1]);
         return { startTime: `${String(hour).padStart(2, '0')}:00 AM`, endTime: `${String(hour).padStart(2, '0')}:00 AM`, startDisplay: `${hour} AM`, endDisplay: `${hour} AM` };
+    }
+    // Numeric Kannada/Hindi range spoken without English connectors.
+    const nativeRange = String(text || '').match(/(\d{1,2})(?:\s*(?:ರಿಂದ|ಇಂದ|से|तक|वाजे तक|ವರೆಗೆ)\s*)(\d{1,2})/u);
+    if (nativeRange) {
+        return extractTimeRange(`${nativeRange[1]} to ${nativeRange[2]}`);
     }
     const range = extractTimeRange(text);
     if (range) return range;
@@ -2347,7 +2377,25 @@ async function processCustomerTurn(session, text, actionsPerformed) {
     // 5. Check if awaiting booking confirmation
     if (draft.awaiting_booking_confirmation && draft.pending_booking) {
         if (/^(yes|yeah|yep|sure|correct|right|okay|ok|confirm|confirmed|book|book it|proceed|do it|ha|haudu|yes please|ಹೌದು|ಹೌದಾ|हाँ|हां)(?:\b|\s|$)/iu.test(lower)) {
-            const pb = draft.pending_booking;
+            const pb = { ...draft.pending_booking };
+            // If the caller names a specific worker while confirming (for
+            // example “ಹೌದು ರಾಮುಗೆ ಬುಕ್ ಮಾಡಿ”), bind that worker now instead
+            // of silently creating the previously broadcast request.
+            const workerNameAliases = {
+                ramu: ['ರಾಮು', 'रामू'], priya: ['ಪ್ರಿಯಾ', 'प्रिया'], kiran: ['ಕಿರಣ್', 'किरण'],
+                saurav: ['ಸೌರವ್', 'सौरव', 'सौरव್'], john: ['ಜಾನ್', 'जॉन'], zainab: ['ಜೈನಬ್', 'जैनब']
+            };
+            const namedWorker = (DB.getAllWorkers() || []).find(w => {
+                if (!w.name || (city && w.city && String(w.city).toLowerCase() !== String(city).toLowerCase())) return false;
+                const key = String(w.name).toLowerCase().split(/\s+/)[0];
+                return lower.includes(String(w.name).toLowerCase()) || (workerNameAliases[key] || []).some(alias => text.includes(alias));
+            });
+            if (namedWorker) {
+                pb.workerId = namedWorker.id;
+                pb.workerName = namedWorker.name;
+                pb.workerPhone = namedWorker.phone;
+                pb.price = namedWorker.price || pb.price;
+            }
             const activePhone = customerPhone || extractPhoneNumber(text) || pb.customer_phone || '9876543210';
             const newJob = DB.createJob({
                 customer_id: session.customerId || null,
@@ -2391,7 +2439,8 @@ async function processCustomerTurn(session, text, actionsPerformed) {
     }
 
     // 6. Booking / Hiring Request ("Book Priya tomorrow at 10 AM", "I want to book an electrician", "Book a plumber for leaking tap", "tomorrow I need worker at 8 am to clean my house")
-    const isDirectBooking = /\b(?:book|hire|schedule|send|request|get me an?|need to book)\b/i.test(lower);
+    const isDirectBooking = /\b(?:book|hire|schedule|send|request|get me an?|need to book)\b/i.test(lower)
+        || /(?:ಬುಕ್|ಬುಕಿಂಗ್|ನೇಮಿಸಿ|ಹುಡುಕಿ|बुक|बुकिंग|बुला|भर्ती)/u.test(text);
     const extractedTrade = extractTradeAndService(text);
     let extractedTime = extractTimeWindow(text);
     const extractedDate = extractAvailabilityDate(text) || (lower.includes('today') ? 'Today' : (lower.includes('tomorrow') ? 'Tomorrow' : null));
@@ -2416,10 +2465,17 @@ async function processCustomerTurn(session, text, actionsPerformed) {
         }
     }
 
-    if (isDirectBooking || draft.awaiting_booking_end || (extractedTrade && (extractedDate || extractedTime || targetWorker))) {
+    if (isDirectBooking || draft.awaiting_booking_end || (draft.service && (extractedDate || extractedTime)) || (targetWorker && (extractedDate || extractedTime || isDirectBooking)) || (extractedTrade && (extractedDate || extractedTime || targetWorker))) {
         const service = (targetWorker && targetWorker.trade) || extractedTrade || draft.service || 'General Service';
         const date = extractedDate || draft.date || 'Tomorrow';
         if (!extractedTime && !draft.time) {
+            // Preserve the service/date while asking for the missing slot so a
+            // follow-up such as “9 ರಿಂದ 4” completes the same request.
+            draft.service = service;
+            draft.date = date;
+            draft.workerId = targetWorker ? targetWorker.id : (draft.workerId || null);
+            draft.workerName = targetWorker ? targetWorker.name : (draft.workerName || null);
+            draft.workerPhone = targetWorker ? targetWorker.phone : (draft.workerPhone || null);
             return { spokenResponse: session.language === 'KN' ? 'ಯಾವ ಸಮಯಕ್ಕೆ ಬುಕ್ ಮಾಡಬೇಕು? ಪ್ರಾರಂಭ ಮತ್ತು ಅಂತ್ಯದ ಸಮಯ ಎರಡನ್ನೂ ಹೇಳಿ.' : session.language === 'HN' ? 'किस समय बुक करना है? कृपया शुरू और समाप्ति दोनों समय बताइए।' : 'What time should I book? Please tell me both the start and end time.', detectedIntent: 'ask_booking_time' };
         }
         if (extractedTime && extractedTime.startTime === extractedTime.endTime) {
@@ -2432,11 +2488,37 @@ async function processCustomerTurn(session, text, actionsPerformed) {
             draft.workerPhone = targetWorker ? targetWorker.phone : null;
             return { spokenResponse: session.language === 'KN' ? `ಪ್ರಾರಂಭ ಸಮಯ ${extractedTime.startDisplay}. ಯಾವ ಸಮಯದವರೆಗೆ ಲಭ್ಯವಿರುತ್ತಾರೆ?` : session.language === 'HN' ? `शुरू का समय ${extractedTime.startDisplay} है। समाप्ति का समय क्या होगा?` : `The start time is ${extractedTime.startDisplay}. What is the end time?`, detectedIntent: 'ask_booking_end_time' };
         }
-        const time = (extractedTime && (extractedTime.startDisplay || extractedTime.startTime)) || draft.time;
+        const time = extractedTime
+            ? (extractedTime.startTime !== extractedTime.endTime
+                ? `${extractedTime.startDisplay || extractedTime.startTime} to ${extractedTime.endDisplay || extractedTime.endTime}`
+                : (extractedTime.startDisplay || extractedTime.startTime))
+            : draft.time;
         const workerId = targetWorker ? targetWorker.id : (draft.workerId || null);
         const workerName = targetWorker ? targetWorker.name : (draft.workerName || null);
         const workerPhone = targetWorker ? targetWorker.phone : (draft.workerPhone || null);
         const price = targetWorker ? targetWorker.price : 350;
+
+        // For a service-only request, show matching workers before asking for
+        // confirmation. This preserves the requested slot while allowing the
+        // caller to say “book Ramu” and bind that exact database record.
+        if (!workerId) {
+            const matchingWorkers = DB.getAllWorkers({ city, service }) || [];
+            if (matchingWorkers.length > 0) {
+                const topWorkers = matchingWorkers.slice(0, 3);
+                const descriptions = topWorkers.map(w => `${w.name} (${w.trade}, ★${w.rating || 5.0}, ₹${w.price || 300})`).join(', ');
+                draft.pending_booking = {
+                    service, date, time, workerId: null, workerName: null,
+                    workerPhone: null, price, customer_phone: customerPhone || '9876543210'
+                };
+                draft.awaiting_booking_confirmation = true;
+                return {
+                    spokenResponse: `We have verified specialists in ${city}: ${descriptions}. Would you like me to book one for you?`,
+                    detectedIntent: 'find_workers_for_booking',
+                    toolExecuted: 'findWorkers',
+                    toolResult: { count: matchingWorkers.length, workers: topWorkers }
+                };
+            }
+        }
 
         // If direct booking with worker, run conflict check
         if (workerId) {
@@ -2485,6 +2567,20 @@ async function processCustomerTurn(session, text, actionsPerformed) {
     // 6. Specialist Discovery ("I need an electrician", "Who is available?", "Find a plumber in Ramanagara")
     if (extractedTrade || /\b(electrician|plumber|carpenter|mechanic|painter|technician|mason|tailor|welder|cleaner|appliance|specialist|specialists|workers|worker)\b/i.test(lower)) {
         const trade = extractedTrade || (lower.match(/\b(electrician|plumber|carpenter|mechanic|painter|technician|mason|tailor|welder)\b/i) || [])[0] || '';
+        // Preserve a service-only request for the next turn when the caller
+        // supplies the date/time after seeing or hearing the initial prompt.
+        if (trade) draft.service = trade;
+        if (extractedDate) draft.date = extractedDate;
+        if (trade && !extractedDate && !extractedTime && !targetWorker) {
+            return {
+                spokenResponse: session.language === 'KN'
+                    ? 'ಯಾವ ದಿನ ಮತ್ತು ಯಾವ ಸಮಯಕ್ಕೆ ಬುಕ್ ಮಾಡಬೇಕು? ಪ್ರಾರಂಭ ಮತ್ತು ಅಂತ್ಯದ ಸಮಯ ಎರಡನ್ನೂ ಹೇಳಿ.'
+                    : session.language === 'HN'
+                        ? 'किस दिन और किस समय बुक करना है? कृपया शुरू और समाप्ति दोनों समय बताइए।'
+                        : 'What date and time should I book? Please tell me both the start and end time.',
+                detectedIntent: 'ask_booking_date_time'
+            };
+        }
         let matchingWorkers = DB.getAllWorkers({ city, service: trade || null });
         if (/\b(lower price|lowest price|cheapest|cheaper|budget|कम कीमत|सस्ता|ಕಡಿಮೆ ಬೆಲೆ|ಅಗ್ಗ)\b/iu.test(lower)) {
             matchingWorkers = matchingWorkers.slice().sort((a, b) => Number(a.price || 0) - Number(b.price || 0));
@@ -3260,6 +3356,44 @@ class ContextAwareVoiceAgent {
             toolExecuted = workerTurn.toolExecuted || null;
             toolResult = workerTurn.toolResult || null;
             detectedIntent = workerTurn.detectedIntent || 'worker_profile_details';
+        }
+
+        // Availability slot filling is also stateful. Keep follow-up answers
+        // (including a bare “yes” or a Kannada/Hindi time phrase) on the local
+        // path so Gemini cannot restart the time question or discard the
+        // pending start/end values.
+        const workerDraftState = session.workerDraft || {};
+        const workerAvailabilityTurn = session.callerRole === 'worker' && (
+            workerDraftState.awaiting_availability_confirmation || workerDraftState.pending_availability
+            || /\b(?:available|availability|working hours|start time|end time|daily|every day|tomorrow|today)\b/i.test(text)
+            || /(?:ಲಭ್ಯ|ಲಭ್ಯತೆ|ಕೆಲಸದ ಸಮಯ|ಪ್ರತಿ ದಿನ|ನಾಳೆ|ಇಂದು|ರಿಂದ|ವರೆಗೆ|ನೈನ್|ಫೋರ್|उपलब्ध|उपलब्धता|काम के घंटे|रोज|कल|आज|से|तक|नौ|चार)/u.test(text)
+        );
+        if (workerAvailabilityTurn && !spokenResponse) {
+            const workerTurn = await processWorkerTurn(session, text, actionsPerformed);
+            spokenResponse = workerTurn.spokenResponse;
+            toolExecuted = workerTurn.toolExecuted || null;
+            toolResult = workerTurn.toolResult || null;
+            detectedIntent = workerTurn.detectedIntent || 'worker_interaction';
+            shouldEndCall = workerTurn.shouldEndCall || false;
+        }
+
+        // Customer booking/search turns are stateful database operations. Do
+        // not let a generative answer reuse an old service or time (for
+        // example, turning 9–4 into 8 AM); the local engine extracts the
+        // current utterance and preserves pending booking context exactly.
+        const customerTransactionTurn = session.callerRole === 'customer' && (
+            /\b(?:book|booking|bookings|hire|schedule|need|find|search|worker|specialist|electrician|plumber|carpenter|mechanic|painter|clean|tomorrow|today|from\s+\d|at\s+\d|show me|near me|cancel)\b/i.test(text)
+            || /\d\s*(?:ರಿಂದ|ಇಂದ|ವರೆಗೆ|से|तक|to|till|-)\s*\d/u.test(text)
+            || /(?:ಬುಕ್|ಬುಕಿಂಗ್|ಕೆಲಸಗಾರ|ತಜ್ಞ|ಎಲೆಕ್ಟ್ರಿಷಿಯನ್|ಪ್ಲಂಬರ್|ಕಾರ್ಪೆಂಟರ್|ಮೆಕ್ಯಾನಿಕ್|ಪೇಂಟರ್|ನಾಳೆ|ಇಂದು|ನನ್ನ ಬುಕಿಂಗ್|ಹುಡುಕಿ)/u.test(text)
+            || /(?:बुक|बुकिंग|कामगार|विशेषज्ञ|इलेक्ट्रिशियन|प्लंबर|बढ़ई|मैकेनिक|पेंटर|कल|आज|मेरी बुकिंग|ढूँढ)/u.test(text)
+        );
+        if (customerTransactionTurn && !spokenResponse) {
+            const customerTurn = await processCustomerTurn(session, text, actionsPerformed);
+            spokenResponse = customerTurn.spokenResponse;
+            toolExecuted = customerTurn.toolExecuted || null;
+            toolResult = customerTurn.toolResult || null;
+            detectedIntent = customerTurn.detectedIntent || 'customer_interaction';
+            shouldEndCall = customerTurn.shouldEndCall || false;
         }
 
         // 1. Direct Gemini 3.6 Flash Engine Execution

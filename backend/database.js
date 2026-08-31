@@ -39,7 +39,7 @@ let useMemoryFallback = false;
 
 if (DatabaseSync) {
     try {
-        let dbFile = path.join(__dirname, '..', 'gigsync.db');
+        let dbFile = process.env.GIGSYNC_DB_PATH || path.join(__dirname, '..', 'gigsync.db');
         const isServerless = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.NOW_REGION);
         
         if (isServerless) {
@@ -1555,6 +1555,13 @@ const DB = {
             if (isAm && hours === 12) hours = 0;
             return hours * 60 + minutes;
         }
+        function parseEndMinutes(timeStr) {
+            if (!timeStr) return parseTimeToMinutes(timeStr);
+            const parts = String(timeStr).split(/\s+(?:to|till|until)\s+/i);
+            // A point booking occupies the standard one-hour slot used by the
+            // existing booking UI and regression tests.
+            return parts.length > 1 ? parseTimeToMinutes(parts[1]) : parseTimeToMinutes(timeStr) + 60;
+        }
 
         const reqMin = parseTimeToMinutes(requestedTime);
         const reqDateStr = normalizeDateKey(requestedDate);
@@ -1577,14 +1584,17 @@ const DB = {
             }
 
             if (!matchingSlots.length) return 'NotAvailable';
-            if (!matchingSlots.some(s => reqMin >= parseTimeToMinutes(s.start_time) && reqMin <= parseTimeToMinutes(s.end_time))) return 'OutsideHours';
+            const reqEnd = parseEndMinutes(requestedTime);
+            if (!matchingSlots.some(s => reqMin >= parseTimeToMinutes(s.start_time) && reqEnd <= parseTimeToMinutes(s.end_time))) return 'OutsideHours';
 
             // 2. Check conflicting jobs
             const conflict = memoryStore.jobs.find(j => {
-                if (j.worker_id !== Number(workerId) || j.requested_date !== requestedDate) return false;
+                if (j.worker_id !== Number(workerId) || normalizeDateKey(j.requested_date).toLowerCase() !== reqDateStr.toLowerCase()) return false;
                 if (!['Confirmed', 'Accepted', 'On the Way', 'In Progress'].includes(j.status)) return false;
                 const jMin = parseTimeToMinutes(j.requested_time);
-                return Math.abs(reqMin - jMin) < 60;
+                const jEnd = parseEndMinutes(j.requested_time);
+                const reqEnd = parseEndMinutes(requestedTime);
+                return jMin < reqEnd && reqMin < jEnd;
             });
             if (conflict) return 'JobConflict';
             return null;
@@ -1614,7 +1624,8 @@ const DB = {
         }
 
         if (!matchingSlots.length) return 'NotAvailable';
-        if (!matchingSlots.some(s => reqMin >= parseTimeToMinutes(s.start_time) && reqMin <= parseTimeToMinutes(s.end_time))) return 'OutsideHours';
+        const reqEnd = parseEndMinutes(requestedTime);
+        if (!matchingSlots.some(s => reqMin >= parseTimeToMinutes(s.start_time) && reqEnd <= parseTimeToMinutes(s.end_time))) return 'OutsideHours';
 
         // 2. Check conflicting jobs
         // Older rows may contain labels such as "Tomorrow" while newer rows
@@ -1628,7 +1639,8 @@ const DB = {
 
         for (const j of jobs) {
             const jMin = parseTimeToMinutes(j.requested_time);
-            if (Math.abs(reqMin - jMin) < 60) {
+            const jEnd = parseEndMinutes(j.requested_time);
+            if (jMin < reqEnd && reqMin < jEnd) {
                 return 'JobConflict';
             }
         }

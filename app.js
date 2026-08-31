@@ -224,6 +224,7 @@ function unlockAudioAutoplay() {
 /* ---------- Echo Suppression & Speech Recognition Control ---------- */
 function pauseSpeechRecognitionForTts() {
     isAiSpeaking = true;
+    speechRecognitionPaused = true;
     clearTimeout(turnSilenceTimer);
     turnSilenceTimer = null;
     currentTurnTranscript = '';
@@ -248,6 +249,7 @@ function resumeSpeechRecognitionAfterTts(delayMs = 800) {
 
     setTimeout(() => {
         isAiSpeaking = false;
+        speechRecognitionPaused = false;
         if (state.voiceAgentActive) {
             setVoiceAgentState('listening', '🟢 LISTENING');
             const liveStatus = document.getElementById('terminalLiveAudioStatus');
@@ -2380,6 +2382,7 @@ let terminalAudioAnimId = null;
 
 // Conversational VAD & Turn State Variables (5-Second Silence Detection Window)
 let isAiSpeaking = false;
+let speechRecognitionPaused = false;
 let turnSilenceTimer = null;
 let currentTurnTranscript = '';
 let currentInterimTranscript = '';
@@ -2404,22 +2407,22 @@ function setVoiceAgentState(stateKey, labelText) {
 function deduplicateUtterance(str) {
     if (!str) return '';
     return str
-        .replace(/\b(\w+(?:\s+\w+){1,4})\s+\1\b/gi, '$1')
-        .replace(/\b(\w+)\s+\1\b/gi, '$1')
+        .replace(/\b(\w+(?:\s+\w+){1,4})\s+\1\b/giu, '$1')
+        .replace(/\b(\w+)\s+\1\b/giu, '$1')
         .trim();
 }
 
 /* ---------- Echo Detection & Self-Voice Filter ---------- */
 function isAiSelfEcho(callerText) {
     if (!callerText) return false;
-    const cClean = callerText.toLowerCase().replace(/[^a-z0-9\s]/g, '').trim();
+    const cClean = callerText.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, '').trim();
     const cTokens = cClean.split(/\s+/).filter(Boolean);
     if (cTokens.length === 0) return false;
 
     // Check against recent AI responses within last 15 seconds
     for (const item of (state.recentAiResponses || [])) {
         if (Date.now() - item.time < 15000) {
-            const aiClean = item.text.toLowerCase().replace(/[^a-z0-9\s]/g, '').trim();
+            const aiClean = item.text.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, '').trim();
             const aiTokens = aiClean.split(/\s+/).filter(Boolean);
             if (aiTokens.length === 0) continue;
 
@@ -2608,9 +2611,9 @@ async function startTerminalAudioPipeline() {
             };
 
             terminalSpeechRec.onend = () => {
-                if (state.voiceAgentActive && !isAiSpeaking) {
+                if (state.voiceAgentActive && !isAiSpeaking && !speechRecognitionPaused) {
                     setTimeout(() => {
-                        if (state.voiceAgentActive && !isAiSpeaking) {
+                        if (state.voiceAgentActive && !isAiSpeaking && !speechRecognitionPaused) {
                             try { terminalSpeechRec.start(); } catch(e){}
                         }
                     }, 100);

@@ -980,52 +980,6 @@ document.addEventListener('click', (e) => {
     }
 });
 
-// Direct Portal Switchers in Navigation / Dropdowns
-//
-// Switching view must never switch IDENTITY. These handlers used to overwrite
-// state.user with an invented person — including seed worker Rumais (7760782551) —
-// so one tap made the signed-in visitor look like a real worker. A portal that shows
-// someone's private data now requires being signed in as that someone.
-function requireRole(role, portal, label) {
-    if (state.user && state.user.role === role) {
-        switchPortal(portal);
-        toast(`Switched to ${label}`);
-        return;
-    }
-    toast(`Sign in with your ${role === 'admin' ? 'operator' : role} account to open the ${label}.`);
-    switchPortal('gateway');
-    // The gateway's role picker uses 'terminal' for the admin operator.
-    applyRoleSelection(role === 'admin' ? 'terminal' : role);
-}
-
-document.getElementById('switchPortalBtn')?.addEventListener('click', () => {
-    userDropdownMenu?.classList.add('hidden');
-    requireRole('worker', 'worker', 'Worker Dashboard');
-});
-
-document.getElementById('dropdownTerminalBtn')?.addEventListener('click', () => {
-    userDropdownMenu?.classList.add('hidden');
-    requireRole('admin', 'terminal', 'Voice Terminal');
-});
-
-document.getElementById('workerSwitchCustBtn')?.addEventListener('click', () => {
-    workerDropdownMenu?.classList.add('hidden');
-    requireRole('customer', 'customer', 'Customer Experience');
-});
-
-document.getElementById('wDropdownTerminalBtn')?.addEventListener('click', () => {
-    workerDropdownMenu?.classList.add('hidden');
-    requireRole('admin', 'terminal', 'Voice Terminal');
-});
-
-document.getElementById('terminalSwitchCustBtn')?.addEventListener('click', () => {
-    requireRole('customer', 'customer', 'Customer Experience');
-});
-
-document.getElementById('terminalSwitchWorkerBtn')?.addEventListener('click', () => {
-    requireRole('worker', 'worker', 'Worker Dashboard');
-});
-
 // Logout Handlers
 function logout() {
     const oldSessionId = state.sessionId;
@@ -1061,14 +1015,6 @@ function logout() {
 document.getElementById('dropdownLogoutBtn')?.addEventListener('click', logout);
 document.getElementById('workerLogoutBtn')?.addEventListener('click', logout);
 document.getElementById('terminalLogoutBtn')?.addEventListener('click', logout);
-
-// Cross-portal Switchers
-document.getElementById('switchPortalBtn')?.addEventListener('click', () => switchPortal('worker'));
-document.getElementById('workerSwitchCustBtn')?.addEventListener('click', () => switchPortal('customer'));
-document.getElementById('dropdownTerminalBtn')?.addEventListener('click', () => switchPortal('terminal'));
-document.getElementById('wDropdownTerminalBtn')?.addEventListener('click', () => switchPortal('terminal'));
-document.getElementById('terminalSwitchCustBtn')?.addEventListener('click', () => switchPortal('customer'));
-document.getElementById('terminalSwitchWorkerBtn')?.addEventListener('click', () => switchPortal('worker'));
 
 /* ======================================================================
    1. CUSTOMER PORTAL DATA & LOGIC
@@ -1483,7 +1429,6 @@ function openCustomerProfileModal() {
     customerProfileModal?.classList.remove('hidden');
 }
 
-document.getElementById('custProfileBtn')?.addEventListener('click', openCustomerProfileModal);
 document.getElementById('closeCustomerProfileModalBtn')?.addEventListener('click', () => customerProfileModal?.classList.add('hidden'));
 
 document.getElementById('customerProfileForm')?.addEventListener('submit', async (e) => {
@@ -1532,6 +1477,7 @@ async function loadCustomerBookings(filter = 'all') {
 
     const res = await apiFetch(`/api/jobs?phone=${encodeURIComponent(custPhone)}`);
     const allJobs = (res.ok && res.data.jobs) ? res.data.jobs : [];
+    const availableOpportunities = (res.ok && Array.isArray(res.data.opportunities)) ? res.data.opportunities : [];
     const jobs = allJobs.filter(j => {
         const jp = (j.customer_phone || '').replace(/\D/g, '');
         return jp === custPhone || (state.user && j.customer_id === state.user.id);
@@ -2116,12 +2062,12 @@ async function loadWorkerDashboardData() {
         }
     } catch (_) {}
 
-    const workerPhone = state.user?.phone || '';
+    const workerPhone = state.user?.phone ? String(state.user.phone).replace(/\D/g, '') : '';
     const jobsUrl = workerPhone ? `/api/jobs?worker_phone=${encodeURIComponent(workerPhone)}` : '/api/jobs';
     const res = await apiFetch(jobsUrl);
     const allJobs = (res.ok && res.data.jobs) ? res.data.jobs : [];
     // Filter jobs strictly relevant to this worker
-    const jobs = workerPhone ? allJobs.filter(j => j.worker_phone === workerPhone || (j.worker_phone === null && j.status === 'Requested')) : [];
+    const jobs = workerPhone ? allJobs.filter(j => String(j.worker_phone || '').replace(/\D/g, '') === workerPhone || (j.worker_phone === null && j.status === 'Requested')) : [];
     state.jobs = jobs;
 
     // Availability Display — show slot or 'On Duty' from database schedule
@@ -2179,10 +2125,8 @@ async function loadWorkerDashboardData() {
     // GAP 3: Available Job Opportunities — unassigned Requested jobs in worker's city/trade
     const workerCity = state.user?.city || state.city;
     const workerTrade2 = (state.user?.profile?.trade || state.user?.trade || '').toLowerCase();
-    const opportunities = allJobs.filter(j =>
-        j.status === 'Requested' &&
-        !j.worker_phone &&
-        (!workerCity || j.city === workerCity || j.city === state.city)
+    const opportunities = availableOpportunities.length > 0 ? availableOpportunities : allJobs.filter(j =>
+        j.status === 'Requested' && !j.worker_phone && (!workerCity || j.city === workerCity || j.city === state.city)
     );
 
     // Show opportunities and assigned bookings in the Assigned/Upcoming Bookings section
@@ -2193,7 +2137,8 @@ async function loadWorkerDashboardData() {
     // Worker's own assigned/confirmed/accepted bookings across ALL dates
     const myUpcoming = allJobs.filter(j => {
         const jp = (j.worker_phone || '').replace(/\D/g, '');
-        const isMyJob = (cleanWorkerPhone && jp === cleanWorkerPhone) || (state.user && j.worker_id === state.user.id);
+        const profileId = workerProfile && workerProfile.id;
+        const isMyJob = (cleanWorkerPhone && jp === cleanWorkerPhone) || (profileId && Number(j.worker_id) === Number(profileId));
         return isMyJob && ['Requested', 'Confirmed', 'Assigned', 'Accepted', 'In Progress', 'On the Way'].includes(j.status);
     });
 
@@ -3021,6 +2966,17 @@ function closeAiVoiceModal() {
 
 document.getElementById('homeTalkAiActionBtn')?.addEventListener('click', openAiVoiceModal);
 document.getElementById('workerTalkAiActionBtn')?.addEventListener('click', openAiVoiceModal);
+const customerVoiceAssistantCard = document.getElementById('customerVoiceAssistantCard');
+customerVoiceAssistantCard?.addEventListener('click', (event) => {
+    if (event.target.closest('button')) return;
+    openAiVoiceModal();
+});
+customerVoiceAssistantCard?.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        openAiVoiceModal();
+    }
+});
 document.getElementById('closeAiVoiceModalBtn')?.addEventListener('click', closeAiVoiceModal);
 
 let aiSpeechRecognizer = null;

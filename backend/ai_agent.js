@@ -78,7 +78,7 @@ async function awaitFirebase(dbResult) {
 // 1. Definition of Real Database Tools (No Assumptions, No Fabricated Records)
 const AI_TOOLS = {
     // 0. Simple Unified Worker Registration & Availability Upsert
-    async registerOrUpdateWorker({ name, phone, job_role, trade, availability_date, date, start_time, startTime, end_time, endTime, city = 'Ramanagara' }) {
+    async registerOrUpdateWorker({ name, phone, job_role, trade, availability_date, date, start_time, startTime, end_time, endTime, city = 'Ramanagara', password = null }) {
         const cleanPhone = (phone || '').replace(/\D/g, '');
         if (cleanPhone.length !== 10) {
             return { status: 'error', persisted: false, message: 'A valid 10-digit phone number is required.' };
@@ -95,7 +95,8 @@ const AI_TOOLS = {
             availability_date: effectiveDate,
             start_time: effectiveStart,
             end_time: effectiveEnd,
-            city
+            city,
+            password
         });
 
         return {
@@ -107,7 +108,7 @@ const AI_TOOLS = {
     },
 
     // 1. Register or Update Worker Profile in Verified Database & Firebase
-    async registerWorkerProfile({ name, phone, trade, city = 'Ramanagara', area = 'Town', tools = 'Standard tool kit', price = 300, experienceYears = 2, confirmed = false }) {
+    async registerWorkerProfile({ name, phone, trade, city = 'Ramanagara', area = 'Town', tools = 'Standard tool kit', price = 300, experienceYears = 2, confirmed = false, password = null }) {
         const cleanPhone = (phone || '').replace(/\D/g, '');
         if (cleanPhone.length !== 10) {
             return {
@@ -142,7 +143,8 @@ const AI_TOOLS = {
             area,
             tools,
             price: Number(price) || 300,
-            experienceYears: Number(experienceYears) || 2
+            experienceYears: Number(experienceYears) || 2,
+            password
         });
 
         // Read back from SQLite. A returned object is not proof; a re-read is.
@@ -464,7 +466,12 @@ const AI_TOOLS = {
 
         let jobs = jobsForWorker(clean, worker.id);
         if (date && String(date).toLowerCase() !== 'all') {
-            jobs = jobs.filter(j => (j.requested_date || '').toLowerCase() === String(date).toLowerCase());
+            const wantedDate = String(date).toLowerCase() === 'today' || String(date).toLowerCase() === 'tomorrow'
+                ? String(date).toLowerCase() : String(date).toLowerCase();
+            jobs = jobs.filter(j => {
+                const stored = String(j.requested_date || '').toLowerCase();
+                return stored === wantedDate || stored === String(date).toLowerCase();
+            });
         }
         if (status && String(status).toLowerCase() !== 'all') {
             jobs = jobs.filter(j => (j.status || '').toLowerCase() === String(status).toLowerCase());
@@ -1144,10 +1151,14 @@ class GeminiConversationalBrain {
     // deterministic agent if Gemini cannot produce its first response quickly.
     async generateWithFallback(client, request) {
         let lastErr = null;
-        // Keep the server-side brain inside a sub-second call-turn budget. If
-        // Gemini is busy, the deterministic database-first fallback answers
-        // immediately instead of holding the caller on the line.
-        const timeoutMs = Math.min(Number(process.env.AI_RESPONSE_TIMEOUT_MS) || 800, 800);
+        // Keep the server-side brain inside a bounded call-turn budget. If
+        // Gemini is unavailable, the deterministic database-first fallback
+        // answers after the timeout instead of hanging indefinitely.
+        // Give Gemini a realistic window to answer before using the
+        // database-backed fallback. The environment variable may lower this
+        // for testing, but production is capped at five seconds.
+        const configuredTimeout = Number(process.env.AI_RESPONSE_TIMEOUT_MS);
+        const timeoutMs = Math.min(Number.isFinite(configuredTimeout) && configuredTimeout > 0 ? configuredTimeout : 5000, 5000);
 
         for (let attempt = 0; attempt < 1; attempt++) {
             const idx = (this.modelIndex + attempt) % this.modelChain.length;
@@ -1546,7 +1557,11 @@ class ConversationSessionManager {
         if (/^(KN|HN|EN)$/i.test(defaultData.language || '')) session.language = String(defaultData.language).toUpperCase();
         
         // If role switched on this session key, clean history & drafts so roles never conflict
-        if (defaultData.callerRole && defaultData.callerRole !== session.callerRole) {
+        // Anonymous terminal requests are initially labelled customer by the
+        // gateway. Once the caller selects worker/customer, preserve that
+        // choice across subsequent HTTP turns instead of resetting the draft.
+        const preserveTerminalRole = defaultData.portal === 'terminal' && session.terminalAccountChoice;
+        if (defaultData.callerRole && defaultData.callerRole !== session.callerRole && !preserveTerminalRole) {
             session.callerRole = defaultData.callerRole;
             session.history = [];
             session.workerDraft = { name: null, job_role: null, phone: cleanPhone, availability_date: null, start_time: null, end_time: null, start_display: null, end_display: null, last_asked_field: null, completed: false };
@@ -1652,13 +1667,13 @@ function extractTradeAndService(text) {
     if (lower.includes('tv technician') || lower.includes('television') || lower.includes('led tv') || lower.includes('smart tv') || lower.includes('screen repair') || lower.includes('ಟಿವಿ')) {
         return 'TV & Electronics Repair';
     }
-    if (lower.includes('refrigerator') || lower.includes('fridge') || lower.includes('deep freezer')) {
+    if (lower.includes('refrigerator') || lower.includes('fridge') || lower.includes('deep freezer') || lower.includes('फ्रिज') || lower.includes('रेफ्रिजरेटर') || lower.includes('ಫ್ರಿಜ್') || lower.includes('ಫ್ರಿಡ್ಜ್')) {
         return 'Refrigerator Repair';
     }
-    if (lower.includes('ac technician') || lower.includes('air conditioner') || lower.includes('split ac') || lower.includes('ac repair') || lower.includes('cooler')) {
+    if (lower.includes('ac technician') || lower.includes('air conditioner') || lower.includes('split ac') || lower.includes('ac repair') || lower.includes('cooler') || lower.includes('एसी') || lower.includes('एयर कंडीशनर') || lower.includes('ಎಸಿ') || lower.includes('ಏರ್ ಕಂಡಿಷನರ್')) {
         return 'AC & Appliances';
     }
-    if (lower.includes('bike mechanic') || lower.includes('two wheeler') || lower.includes('scooter') || lower.includes('motorcycle') || lower.includes('puncture') || lower.includes('bike repair')) {
+    if (lower.includes('bike mechanic') || lower.includes('two wheeler') || lower.includes('two-wheeler') || lower.includes('scooter') || lower.includes('motorcycle') || lower.includes('puncture') || lower.includes('bike repair') || lower.includes('दोपहिया') || lower.includes('बाइक') || lower.includes('स्कूटर') || lower.includes('ಎರಡು ಚಕ್ರ') || lower.includes('ಬೈಕ್') || lower.includes('ಸ್ಕೂಟರ್')) {
         return 'Mechanic';
     }
     if (lower.includes('pipe leakage') || lower.includes('leakage repair') || lower.includes('pipe repair') || lower.includes('leaking tap') || lower.includes('tap leak')) {
@@ -1669,16 +1684,16 @@ function extractTradeAndService(text) {
     if (lower.includes('electric') || lower.includes('cliteration') || lower.includes('literation') || lower.includes('elctric') || lower.includes('lectrition') || lower.includes('electritian') || lower.includes('electrition') || lower.includes('electrishan') || lower.includes('fan') || lower.includes('switch') || lower.includes('wire') || lower.includes('current') || lower.includes('power') || lower.includes('bulb') || lower.includes('ಎಲೆಕ್ಟ್ರಿಷಿಯನ್')) {
         return 'Electrical';
     }
-    if (lower.includes('plumb') || lower.includes('plamber') || lower.includes('plamer') || lower.includes('pipe') || lower.includes('tap') || lower.includes('leak') || lower.includes('drain') || lower.includes('water') || lower.includes('ಪ್ಲಂಬರ್') || lower.includes('ನೀರು')) {
+    if (lower.includes('plumb') || lower.includes('plamber') || lower.includes('plamer') || lower.includes('pipe') || lower.includes('tap') || lower.includes('leak') || lower.includes('drain') || lower.includes('water') || lower.includes('प्लंबर') || lower.includes('नलसाज') || lower.includes('पाइप') || lower.includes('पानी') || lower.includes('ಪ್ಲಂಬರ್') || lower.includes('ಪ್ಲಂಬರ') || lower.includes('ಪ್ಲಂಬಾರ್') || lower.includes('ನೀರು')) {
         return 'Plumbing';
     }
-    if (lower.includes('carpenter') || lower.includes('carpanter') || lower.includes('carpnter') || lower.includes('wood') || lower.includes('door') || lower.includes('window') || lower.includes('furniture') || lower.includes('lock') || lower.includes('ಕಾರ್ಪೆಂಟರ್') || lower.includes('ಮರಗೆಲಸ')) {
+    if (lower.includes('carpenter') || lower.includes('carpanter') || lower.includes('carpnter') || lower.includes('wood') || lower.includes('door') || lower.includes('window') || lower.includes('furniture') || lower.includes('lock') || lower.includes('बढ़ई') || lower.includes('कारपेंटर') || lower.includes('लकड़ी') || lower.includes('ಕಾರ್ಪೆಂಟರ್') || lower.includes('ಮರಗೆಲಸ')) {
         return 'Carpentry';
     }
     if (lower.includes('mason') || lower.includes('masonry') || lower.includes('brick') || lower.includes('plaster') || lower.includes('cement') || lower.includes('tile') || lower.includes('ಮೇಸ್ತ್ರಿ') || lower.includes('ಕಟ್ಟಡ')) {
         return 'Masonry & Construction';
     }
-    if (lower.includes('tailor') || lower.includes('tailoring') || lower.includes('stitch') || lower.includes('alteration') || lower.includes('blouse') || lower.includes('dressmaker') || lower.includes('ಟೈಲರ್')) {
+    if (lower.includes('tailor') || lower.includes('tailoring') || lower.includes('stitch') || lower.includes('alteration') || lower.includes('blouse') || lower.includes('dressmaker') || lower.includes('दर्जी') || lower.includes('सिलाई') || lower.includes('टेलर') || lower.includes('ಟೈಲರ್')) {
         return 'Tailoring & Alterations';
     }
     if (lower.includes('welder') || lower.includes('welding') || lower.includes('grill') || lower.includes('fabrication') || lower.includes('metal') || lower.includes('iron gate') || lower.includes('ವೆಲ್ಡರ್')) {
@@ -1687,13 +1702,13 @@ function extractTradeAndService(text) {
     if (lower.includes('driver') || lower.includes('driving') || lower.includes('chauffeur') || lower.includes('cab driver') || lower.includes('car driver') || lower.includes('ಡ್ರೈವರ್')) {
         return 'Driver Services';
     }
-    if (lower.includes('mechanic') || lower.includes('mecanic') || lower.includes('makanic') || lower.includes('breakdown') || lower.includes('engine') || lower.includes('ಮೇಕಾನಿಕ್')) {
+    if (lower.includes('mechanic') || lower.includes('mecanic') || lower.includes('makanic') || lower.includes('breakdown') || lower.includes('engine') || lower.includes('मैकेनिक') || lower.includes('मिस्त्री') || lower.includes('इंजन') || lower.includes('ಮೇಕಾನಿಕ್') || lower.includes('ಮೆಕ್ಯಾನಿಕ್')) {
         return 'Mechanic';
     }
-    if (lower.includes('clean') || lower.includes('maid') || lower.includes('sweep') || lower.includes('wash') || lower.includes('deep clean') || lower.includes('ಕ್ಲೀನಿಂಗ್')) {
+    if (lower.includes('clean') || lower.includes('maid') || lower.includes('sweep') || lower.includes('wash') || lower.includes('deep clean') || lower.includes('सफाई') || lower.includes('सफाईकर्मी') || lower.includes('कामवाली') || lower.includes('ಕ್ಲೀನಿಂಗ್') || lower.includes('ಕ್ಲೀನರ್')) {
         return 'Home Cleaning';
     }
-    if (lower.includes('paint') || lower.includes('painter') || lower.includes('पेंटर') || lower.includes('पेंट') || lower.includes('चित्रकार') || lower.includes('whitewash') || lower.includes('wall paint') || lower.includes('ಬಣ್ಣ') || lower.includes('ಪೇಂಟರ್')) {
+    if (lower.includes('paint') || lower.includes('painter') || lower.includes('पेंटर') || lower.includes('पेंट') || lower.includes('चित्रकार') || lower.includes('रंगाई') || lower.includes('रंगवाला') || lower.includes('whitewash') || lower.includes('wall paint') || lower.includes('ಬಣ್ಣ') || lower.includes('ಪೇಂಟರ್')) {
         return 'Painting';
     }
 
@@ -1863,11 +1878,71 @@ function assistantGreeting(language) {
     return "Hi, I'm GigSync, your assistant. How may I help you?";
 }
 
+// Deterministic fallback responses must honor the selected script when the
+// Gemini request is unavailable or returns the wrong language.
+function localizeCustomerFallback(message, language) {
+    if (!message || language === 'EN') return message;
+    if (/I'm here to help you find and book verified specialists/i.test(message)) {
+        return language === 'KN'
+            ? 'ನಿಮಗೆ ಬೇಕಾದ ಸೇವೆಯನ್ನು ಹುಡುಕಿ ಬುಕ್ ಮಾಡಲು ನಾನು ಸಹಾಯ ಮಾಡುತ್ತೇನೆ. ಯಾವ ಸೇವೆ ಬೇಕು?'
+            : 'मैं आपके लिए सत्यापित विशेषज्ञ ढूँढकर बुक करने में मदद करूँगा। आपको कौन सी सेवा चाहिए?';
+    }
+    if (/What service do you need today/i.test(message)) {
+        return language === 'KN'
+            ? 'ನಿಮಗೆ ಯಾವ ಸೇವೆ ಬೇಕು? ಉದಾಹರಣೆಗೆ ಪ್ಲಂಬರ್, ಎಲೆಕ್ಟ್ರಿಷಿಯನ್ ಅಥವಾ ಕ್ಲೀನರ್ ಎಂದು ಹೇಳಿ.'
+            : 'आज आपको कौन सी सेवा चाहिए? जैसे प्लंबर, इलेक्ट्रिशियन या सफाई सेवा बताइए।';
+    }
+    const confirm = message.match(/Just to confirm: you want (.+?) on (.+?) at (.+?), estimated cost (₹\d+).*$/i);
+    if (confirm) {
+        const [, service, date, time, price] = confirm;
+        return language === 'KN'
+            ? `ದೃಢೀಕರಿಸಿ: ನಿಮಗೆ ${service} ಸೇವೆ ${date} ರಂದು ${time}ಕ್ಕೆ ಬೇಕು. ಅಂದಾಜು ವೆಚ್ಚ ${price}. ಬುಕ್ ಮಾಡಬೇಕೇ?`
+            : `पुष्टि करें: आपको ${service} सेवा ${date} को ${time} बजे चाहिए। अनुमानित कीमत ${price} है। बुक करूँ?`;
+    }
+    if (/No verified specialists found/i.test(message)) {
+        return language === 'KN' ? 'ಈಗ ಯಾವುದೇ ಪರಿಶೀಲಿತ ತಜ್ಞರು ಲಭ್ಯವಿಲ್ಲ. ನಿಮಗೆ ಯಾವ ಸೇವೆ ಬೇಕು?' : 'अभी कोई सत्यापित विशेषज्ञ उपलब्ध नहीं है। आपको कौन सी सेवा चाहिए?';
+    }
+    return message;
+}
+
+function localizeWorkerFallback(message, language) {
+    if (!message || language === 'EN') return message;
+    if (/You don't have any bookings yet/i.test(message)) {
+        return language === 'KN' ? 'ನಿಮಗೆ ಇನ್ನೂ ಯಾವುದೇ ಬುಕ್ಕಿಂಗ್‌ಗಳಿಲ್ಲ.' : 'आपके पास अभी कोई बुकिंग नहीं है।';
+    }
+    const many = message.match(/^Yes\. You have (\d+) bookings\.(.*)$/i);
+    if (many) {
+        return language === 'KN' ? `ಹೌದು. ನಿಮಗೆ ${many[1]} ಬುಕ್ಕಿಂಗ್‌ಗಳಿವೆ. ನಿಮ್ಮ ಎಲ್ಲಾ ಬುಕ್ಕಿಂಗ್‌ಗಳು ನಿಮ್ಮ ಡ್ಯಾಶ್‌ಬೋರ್ಡ್‌ನಲ್ಲಿ ಕಾಣಿಸುತ್ತವೆ.` : `हाँ। आपके पास ${many[1]} बुकिंग हैं। आपकी सभी बुकिंग आपके डैशबोर्ड में दिखाई देंगी।`;
+    }
+    if (/^Yes\. You have a booking/i.test(message)) return language === 'KN' ? 'ಹೌದು. ನಿಮಗೆ ಒಂದು ಬುಕ್ಕಿಂಗ್ ಇದೆ. ವಿವರಗಳು ನಿಮ್ಮ ಡ್ಯಾಶ್‌ಬೋರ್ಡ್‌ನಲ್ಲಿ ಕಾಣಿಸುತ್ತವೆ.' : 'हाँ। आपकी एक बुकिंग है। विवरण आपके डैशबोर्ड में दिखाई देंगे।';
+    return message;
+}
+
+// Read-back of the authenticated worker's actual stored profile. Keep this
+// deterministic so a Gemini timeout or a language switch cannot invent or
+// lose personal details.
+function localizedWorkerProfile(worker, language) {
+    if (!worker) {
+        if (language === 'KN') return 'ಈ ಫೋನ್ ಸಂಖ್ಯೆಗೆ ಕೆಲಸಗಾರರ ಪ್ರೊಫೈಲ್ ಕಂಡುಬಂದಿಲ್ಲ. ಮೊದಲು ನಿಮ್ಮ ಖಾತೆಗೆ ಲಾಗಿನ್ ಮಾಡಿ.';
+        if (language === 'HN') return 'इस फोन नंबर से कोई कामगार प्रोफ़ाइल नहीं मिली। कृपया पहले अपने खाते में लॉगिन करें।';
+        return 'I could not find a worker profile for this phone number. Please log in to your account first.';
+    }
+    const name = worker.name || (language === 'KN' ? 'ಗೊತ್ತಿಲ್ಲ' : language === 'HN' ? 'उपलब्ध नहीं' : 'not set');
+    const trade = worker.trade || (language === 'KN' ? 'ಗೊತ್ತಿಲ್ಲ' : language === 'HN' ? 'उपलब्ध नहीं' : 'not set');
+    const phone = worker.phone || (language === 'KN' ? 'ಉಪलब್ಧವಿಲ್ಲ' : language === 'HN' ? 'उपलब्ध नहीं' : 'not available');
+    const city = worker.city || (language === 'KN' ? 'ಗೊತ್ತಿಲ್ಲ' : language === 'HN' ? 'उपलब्ध नहीं' : 'not set');
+    const area = worker.area || '';
+    const price = worker.price != null ? `₹${worker.price}` : (language === 'KN' ? 'ನಿಗದಿಪಡಿಸಿಲ್ಲ' : language === 'HN' ? 'तय नहीं' : 'not set');
+    if (language === 'KN') return `ನಿಮ್ಮ ಪ್ರೊಫೈಲ್ ವಿವರಗಳು: ಹೆಸರು ${name}, ಕೆಲಸ ${trade}, ಫೋನ್ ${phone}, ಸ್ಥಳ ${city}${area ? `, ${area}` : ''}, ಆರಂಭಿಕ ಬೆಲೆ ${price}.`;
+    if (language === 'HN') return `आपकी प्रोफ़ाइल जानकारी: नाम ${name}, काम ${trade}, फोन ${phone}, स्थान ${city}${area ? `, ${area}` : ''}, शुरुआती कीमत ${price}।`;
+    return `Your profile details are: name ${name}, trade ${trade}, phone ${phone}, location ${city}${area ? `, ${area}` : ''}, and starting price ${price}.`;
+}
+
 function workerPrompt(session, key, english) {
     const lang = session.language || 'EN';
     const prompts = {
-        KN: { name: 'ನಿಮ್ಮ ಹೆಸರು ಏನು?', trade: 'ನೀವು ಯಾವ ರೀತಿಯ ಕೆಲಸ ಮಾಡುತ್ತೀರಿ?', phone: 'ನಿಮ್ಮ 10 ಅಂಕಿಯ ಮೊಬೈಲ್ ಸಂಖ್ಯೆಯನ್ನು ಹೇಳಿ.', date: 'ನೀವು ಯಾವ ದಿನ ಲಭ್ಯವಿರುತ್ತೀರಿ?', time: 'ದಯವಿಟ್ಟು ಪ್ರಾರಂಭ ಮತ್ತು ಅಂತ್ಯದ ಸಮಯ ಎರಡನ್ನೂ ಹೇಳಿ.', end: 'ನೀವು ಯಾವ ಸಮಯದವರೆಗೆ ಲಭ್ಯವಿರುತ್ತೀರಿ?', confirm: 'ಈ ವಿವರಗಳನ್ನು ಉಳಿಸಬೇಕೇ?' },
-        HN: { name: 'आपका नाम क्या है?', trade: 'आप किस तरह का काम करते हैं?', phone: 'अपना 10 अंकों का मोबाइल नंबर बताइए।', date: 'आप किस तारीख को उपलब्ध हैं?', time: 'कृपया शुरू और समाप्ति दोनों समय बताइए।', end: 'आप किस समय तक उपलब्ध रहेंगे?', confirm: 'क्या मैं इन विवरणों को सहेज दूँ?' }
+        KN: { name: 'ನಿಮ್ಮ ಹೆಸರು ಏನು?', trade: 'ನೀವು ಯಾವ ರೀತಿಯ ಕೆಲಸ ಮಾಡುತ್ತೀರಿ?', phone: 'ನಿಮ್ಮ 10 ಅಂಕಿಯ ಮೊಬೈಲ್ ಸಂಖ್ಯೆಯನ್ನು ಹೇಳಿ.', date: 'ನೀವು ಯಾವ ದಿನ ಲಭ್ಯವಿರುತ್ತೀರಿ?', time: 'ದಯವಿಟ್ಟು ಪ್ರಾರಂಭ ಮತ್ತು ಅಂತ್ಯದ ಸಮಯ ಎರಡನ್ನೂ ಹೇಳಿ.', end: 'ನೀವು ಯಾವ ಸಮಯದವರೆಗೆ ಲಭ್ಯವಿರುತ್ತೀರಿ?', password: 'ನಿಮ್ಮ ಖಾತೆಗೆ ಲಾಗಿನ್ ಮಾಡಲು ಕನಿಷ್ಠ 6 ಅಂಕಿಗಳ ಪಾಸ್‌ವರ್ಡ್ ರಚಿಸಿ.', confirm: 'ಈ ವಿವರಗಳನ್ನು ಉಳಿಸಬೇಕೇ?' },
+        HN: { name: 'आपका नाम क्या है?', trade: 'आप किस तरह का काम करते हैं?', phone: 'अपना 10 अंकों का मोबाइल नंबर बताइए।', date: 'आप किस तारीख को उपलब्ध हैं?', time: 'कृपया शुरू और समाप्ति दोनों समय बताइए।', end: 'आप किस समय तक उपलब्ध रहेंगे?', password: 'अपने खाते में लॉगिन करने के लिए कम से कम 6 अक्षरों का पासवर्ड बनाइए।', confirm: 'क्या मैं इन विवरणों को सहेज दूँ?' }
     };
     return (prompts[lang] && prompts[lang][key]) || english;
 }
@@ -2117,6 +2192,74 @@ async function processCustomerTurn(session, text, actionsPerformed) {
     }
     const draft = session.customerDraft;
 
+    if (session.isVoiceCall && session.voiceSignupComplete && draft.accountCreated) {
+        const loginPrompt = session.language === 'KN'
+            ? 'ನಿಮ್ಮ ಖಾತೆ ಯಶಸ್ವಿಯಾಗಿ ರಚಿಸಲಾಗಿದೆ. ದಯವಿಟ್ಟು ಫೋನ್ ಸಂಖ್ಯೆ ಮತ್ತು ಪಾಸ್‌ವರ್ಡ್ ಬಳಸಿ ಲಾಗಿನ್ ಮಾಡಿ.'
+            : session.language === 'HN'
+                ? 'आपका खाता सफलतापूर्वक बन गया है। कृपया फोन नंबर और पासवर्ड से लॉगिन करें।'
+                : 'Your account was created successfully. Please log in with your phone number and password.';
+        return { spokenResponse: loginPrompt, detectedIntent: 'login_required_after_signup' };
+    }
+
+    // Anonymous Voice Terminal customer signup. The terminal chooses the
+    // account type before entering either workflow, then stores the caller's
+    // name, phone and password in the real users/customers tables.
+    if (session.isVoiceCall && session.terminalAccountChoice === 'customer' && !draft.accountCreated) {
+        if (!draft.signupField) draft.signupField = 'name';
+        const fieldAtStart = draft.signupField;
+        // If speech recognition delivers a name while the prompt state is
+        // slightly behind (common when switching Kannada/Hindi mid-call),
+        // capture it before processing the current field.
+        if (!draft.name && /[\u0900-\u097F\u0C80-\u0CFF]/u.test(text)) {
+            const nativeName = text.replace(/(?:मेरा\s+नाम(?:\s+है)?|ನನ್ನ\s+ಹೆಸರು)\s*/iu, '').replace(/[^\p{L}\s]/gu, '').trim();
+            if (nativeName.length >= 2 && !/(हेलो|नमस्ते|ಗ್ರಾಹಕ|ग्राहक|कामगार|ಕೆಲಸಗಾರ)/u.test(nativeName)) {
+                draft.name = nativeName;
+                if (draft.signupField === 'name') draft.signupField = 'phone';
+            }
+        }
+        if (fieldAtStart === 'name') {
+            const m = text.match(/(?:my name is|name is|i am|i'm|this is|call me)\s+(.+)/i);
+            const rawName = (m ? m[1] : text).trim();
+            const name = /[\u0900-\u097F\u0C80-\u0CFF]/u.test(rawName)
+                ? rawName.replace(/[^\p{L}\s]/gu, '').trim()
+                : rawName.replace(/[^a-zA-Z\s]/g, '').trim();
+            if (name.length >= 2 && !/^(hi|hello|yes|customer)$/i.test(name)) {
+                draft.name = name.split(/\s+/).map(p => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase()).join(' ');
+                draft.signupField = 'phone';
+            }
+        } else if (fieldAtStart === 'phone') {
+            const p = extractPhoneNumber(text);
+            if (p) { draft.phone = p; draft.signupField = 'password'; }
+        } else if (fieldAtStart === 'password') {
+            const p = text.trim().replace(/^(my password is|password is|password|पासवर्ड है|पासवर्ड|ಪಾಸ್‌ವರ್ಡ್)\s*/iu, '').trim();
+            if (p.length >= 6 && !/\s/.test(p)) { draft.password = p; draft.signupField = 'confirm'; }
+        } else if (fieldAtStart === 'confirm') {
+            if (/^(yes|yeah|yep|sure|correct|right|okay|ok|confirm|confirmed|ha|ಹೌದು|ಹೌದಾ|हाँ|हां|हांबना)(?:\b|\s|$)/iu.test(lower)) {
+                const user = DB.registerUser({ name: draft.name, phone: draft.phone, password: draft.password, role: 'customer', city: session.city || 'Ramanagara' });
+                if (user) {
+                    draft.accountCreated = true;
+                    session.voiceSignupComplete = true;
+                    session.callerPhone = draft.phone;
+                    session.callerName = draft.name;
+                    session.callerRole = 'customer';
+                    const doneMessage = session.language === 'KN'
+                        ? `ಆಯಿತು, ${draft.name}. ನಿಮ್ಮ ಗ್ರಾಹಕರ ಖಾತೆ ಯಶಸ್ವಿಯಾಗಿ ರಚಿಸಲಾಗಿದೆ. ಫೋನ್ ಸಂಖ್ಯೆ ಮತ್ತು ಪಾಸ್‌ವರ್ಡ್ ಬಳಸಿ ಲಾಗಿನ್ ಮಾಡಿ.`
+                        : session.language === 'HN'
+                            ? `हो गया, ${draft.name}. आपका ग्राहक खाता सफलतापूर्वक बन गया है। फोन नंबर और पासवर्ड से लॉगिन करें।`
+                            : `Done, ${draft.name}. Your customer account was created successfully. Please log in with your phone number and password.`;
+                    return { spokenResponse: doneMessage, detectedIntent: 'customer_registered', toolExecuted: 'registerUser' };
+                }
+                return { spokenResponse: 'I could not save your customer account right now. Please try again.', detectedIntent: 'customer_registration_failed' };
+            }
+        }
+        const prompts = {
+            EN: { name: 'What is your name?', phone: 'What is your 10-digit phone number?', password: 'Please create a password with at least 6 characters.', confirm: `Just to confirm, your name is ${draft.name}, your phone number is ${draft.phone}. Shall I create your customer account?` },
+            KN: { name: 'ನಿಮ್ಮ ಹೆಸರು ಏನು?', phone: 'ನಿಮ್ಮ 10 ಅಂಕಿಯ ಮೊಬೈಲ್ ಸಂಖ್ಯೆಯನ್ನು ಹೇಳಿ.', password: 'ಕನಿಷ್ಠ 6 ಅಕ್ಷರಗಳ ಪಾಸ್‌ವರ್ಡ್ ರಚಿಸಿ.', confirm: `ನಿಮ್ಮ ಹೆಸರು ${draft.name}, ಫೋನ್ ${draft.phone}. ಗ್ರಾಹಕರ ಖಾತೆಯನ್ನು ರಚಿಸಬೇಕೇ?` },
+            HN: { name: 'आपका नाम क्या है?', phone: 'अपना 10 अंकों का मोबाइल नंबर बताइए।', password: 'कम से कम 6 अक्षरों का पासवर्ड बनाइए।', confirm: `आपका नाम ${draft.name} और फोन ${draft.phone} है। ग्राहक खाता बनाऊँ?` }
+        }[session.language || 'EN'];
+        return { spokenResponse: prompts[draft.signupField], detectedIntent: `ask_customer_${draft.signupField}` };
+    }
+
     // 1. Gratitude & Goodbye
     if (/\b(thank you|thanks|thank you so much|dhanyavada|dhanyavadagalu|shukriya|bye|goodbye|that's all|thats all|see you)\b/i.test(lower) && lower.split(/\s+/).length <= 6) {
         actionsPerformed.push('Customer ended conversation');
@@ -2203,7 +2346,7 @@ async function processCustomerTurn(session, text, actionsPerformed) {
 
     // 5. Check if awaiting booking confirmation
     if (draft.awaiting_booking_confirmation && draft.pending_booking) {
-        if (/^(yes|yeah|yep|sure|correct|right|okay|ok|confirm|confirmed|book|book it|proceed|do it|ha|haudu|yes please)\b/i.test(lower)) {
+        if (/^(yes|yeah|yep|sure|correct|right|okay|ok|confirm|confirmed|book|book it|proceed|do it|ha|haudu|yes please|ಹೌದು|ಹೌದಾ|हाँ|हां)(?:\b|\s|$)/iu.test(lower)) {
             const pb = draft.pending_booking;
             const activePhone = customerPhone || extractPhoneNumber(text) || pb.customer_phone || '9876543210';
             const newJob = DB.createJob({
@@ -2250,8 +2393,18 @@ async function processCustomerTurn(session, text, actionsPerformed) {
     // 6. Booking / Hiring Request ("Book Priya tomorrow at 10 AM", "I want to book an electrician", "Book a plumber for leaking tap", "tomorrow I need worker at 8 am to clean my house")
     const isDirectBooking = /\b(?:book|hire|schedule|send|request|get me an?|need to book)\b/i.test(lower);
     const extractedTrade = extractTradeAndService(text);
-    const extractedTime = extractTimeWindow(text);
+    let extractedTime = extractTimeWindow(text);
     const extractedDate = extractAvailabilityDate(text) || (lower.includes('today') ? 'Today' : (lower.includes('tomorrow') ? 'Tomorrow' : null));
+
+    // Complete a previously captured start time with the end time supplied on
+    // the next turn. A single time is never treated as a full booking slot.
+    if (draft.awaiting_booking_end && extractedTime) {
+        const pendingStart = draft.pending_booking_start;
+        const end = extractedTime.endTime || extractedTime.startTime;
+        extractedTime = { startTime: pendingStart.startTime, endTime: end, startDisplay: pendingStart.startDisplay, endDisplay: extractedTime.endDisplay || extractedTime.startDisplay };
+        draft.awaiting_booking_end = false;
+        draft.pending_booking_start = null;
+    }
 
     // Check if customer mentions a specific worker's name
     const allWorkers = DB.getAllWorkers({ city }) || [];
@@ -2263,13 +2416,26 @@ async function processCustomerTurn(session, text, actionsPerformed) {
         }
     }
 
-    if (isDirectBooking || (extractedTrade && (extractedDate || extractedTime || targetWorker))) {
+    if (isDirectBooking || draft.awaiting_booking_end || (extractedTrade && (extractedDate || extractedTime || targetWorker))) {
         const service = (targetWorker && targetWorker.trade) || extractedTrade || draft.service || 'General Service';
         const date = extractedDate || draft.date || 'Tomorrow';
-        const time = (extractedTime && (extractedTime.startDisplay || extractedTime.startTime)) || draft.time || '10:00 AM';
-        const workerId = targetWorker ? targetWorker.id : null;
-        const workerName = targetWorker ? targetWorker.name : null;
-        const workerPhone = targetWorker ? targetWorker.phone : null;
+        if (!extractedTime && !draft.time) {
+            return { spokenResponse: session.language === 'KN' ? 'ಯಾವ ಸಮಯಕ್ಕೆ ಬುಕ್ ಮಾಡಬೇಕು? ಪ್ರಾರಂಭ ಮತ್ತು ಅಂತ್ಯದ ಸಮಯ ಎರಡನ್ನೂ ಹೇಳಿ.' : session.language === 'HN' ? 'किस समय बुक करना है? कृपया शुरू और समाप्ति दोनों समय बताइए।' : 'What time should I book? Please tell me both the start and end time.', detectedIntent: 'ask_booking_time' };
+        }
+        if (extractedTime && extractedTime.startTime === extractedTime.endTime) {
+            draft.awaiting_booking_end = true;
+            draft.pending_booking_start = { startTime: extractedTime.startTime, startDisplay: extractedTime.startDisplay };
+            draft.service = service;
+            draft.date = date;
+            draft.workerId = targetWorker ? targetWorker.id : null;
+            draft.workerName = targetWorker ? targetWorker.name : null;
+            draft.workerPhone = targetWorker ? targetWorker.phone : null;
+            return { spokenResponse: session.language === 'KN' ? `ಪ್ರಾರಂಭ ಸಮಯ ${extractedTime.startDisplay}. ಯಾವ ಸಮಯದವರೆಗೆ ಲಭ್ಯವಿರುತ್ತಾರೆ?` : session.language === 'HN' ? `शुरू का समय ${extractedTime.startDisplay} है। समाप्ति का समय क्या होगा?` : `The start time is ${extractedTime.startDisplay}. What is the end time?`, detectedIntent: 'ask_booking_end_time' };
+        }
+        const time = (extractedTime && (extractedTime.startDisplay || extractedTime.startTime)) || draft.time;
+        const workerId = targetWorker ? targetWorker.id : (draft.workerId || null);
+        const workerName = targetWorker ? targetWorker.name : (draft.workerName || null);
+        const workerPhone = targetWorker ? targetWorker.phone : (draft.workerPhone || null);
         const price = targetWorker ? targetWorker.price : 350;
 
         // If direct booking with worker, run conflict check
@@ -2319,7 +2485,10 @@ async function processCustomerTurn(session, text, actionsPerformed) {
     // 6. Specialist Discovery ("I need an electrician", "Who is available?", "Find a plumber in Ramanagara")
     if (extractedTrade || /\b(electrician|plumber|carpenter|mechanic|painter|technician|mason|tailor|welder|cleaner|appliance|specialist|specialists|workers|worker)\b/i.test(lower)) {
         const trade = extractedTrade || (lower.match(/\b(electrician|plumber|carpenter|mechanic|painter|technician|mason|tailor|welder)\b/i) || [])[0] || '';
-        const matchingWorkers = DB.getAllWorkers({ city, service: trade || null });
+        let matchingWorkers = DB.getAllWorkers({ city, service: trade || null });
+        if (/\b(lower price|lowest price|cheapest|cheaper|budget|कम कीमत|सस्ता|ಕಡಿಮೆ ಬೆಲೆ|ಅಗ್ಗ)\b/iu.test(lower)) {
+            matchingWorkers = matchingWorkers.slice().sort((a, b) => Number(a.price || 0) - Number(b.price || 0));
+        }
         actionsPerformed.push(`Searched specialists for trade '${trade}' in '${city}': ${matchingWorkers.length} found`);
 
         if (matchingWorkers.length === 0) {
@@ -2375,10 +2544,28 @@ async function processWorkerTurn(session, text, actionsPerformed) {
     if (draft.end_time === undefined) draft.end_time = null;
     if (draft.start_display === undefined) draft.start_display = null;
     if (draft.end_display === undefined) draft.end_display = null;
+    if (draft.password === undefined) draft.password = null;
     if (draft.last_asked_field === undefined) draft.last_asked_field = null;
     if (draft.completed === undefined) draft.completed = false;
     if (draft.awaiting_confirmation === undefined) draft.awaiting_confirmation = false;
     const lower = text.toLowerCase().trim();
+
+    // Personal-profile read-back must be handled before generic onboarding or
+    // availability prompts. Match all three supported scripts and use the
+    // verified phone from the logged-in session/database.
+    const isProfileQuery = /\b(?:my\s+(?:details|profile|information|profile details|personal details|personal information|account details)|what details do you have about me|give me my (?:personal )?details|who am i registered as|what is my phone|what is my name|what trade am i|what is my job|what is my profession|what do i do)\b/i.test(lower)
+        || /(?:मेरी जानकारी|मेरी प्रोफाइल|मेरे विवरण|मेरे डिटेल|मैं किस नाम से|मेरा फोन|मेरा नाम|मेरा काम|मेरा पेशा|मैं क्या काम करता|मेरी जानकारी बताइए)/u.test(text)
+        || /(?:ನನ್ನ ವಿವರ|ನನ್ನ ಪ್ರೊಫೈಲ್|ನನ್ನ ಮಾಹಿತಿ|ನನ್ನ ಡೀಟೇಲ್ಸ್|ನನ್ನ ಹೆಸರು|ನನ್ನ ಫೋನ್|ನನ್ನ ಕೆಲಸ|ನನ್ನ ವೃತ್ತಿ|ನಾನು ಯಾವ ಕೆಲಸ|ನನ್ನ ವಿವರಗಳನ್ನು ಹೇಳಿ)/u.test(text);
+    if (isProfileQuery) {
+        const phone = draft.phone || workerPhone || session.callerPhone;
+        const worker = phone ? DB.getWorkerByPhone(phone) : null;
+        return {
+            spokenResponse: localizedWorkerProfile(worker, session.language || 'EN'),
+            detectedIntent: 'worker_profile_details',
+            toolExecuted: 'getWorkerProfile',
+            toolResult: worker ? { status: 'success', dataAvailable: true, profile: worker } : { status: 'not_registered', dataAvailable: false }
+        };
+    }
 
     // An anonymous terminal cannot know which account was selected. Do not
     // start a new registration just because the caller asks this question.
@@ -2456,7 +2643,10 @@ async function processWorkerTurn(session, text, actionsPerformed) {
     }
 
     // 2c. Booking Inquiries
-    const isBookingQuery = /\b(did\s+anyone\s+book\s+me|has\s+anyone\s+booked\s+me|anyone\s+book(ed)?\s+me|booked\s+me|book\s+me|have\s+(a\s+|any\s+)?booking|have\s+any\s+bookings|any\s+booking|any\s+bookings|am\s+i\s+booked|do\s+i\s+have\s+(a\s+|any\s+)?(job|booking|customer)|check\s+my\s+booking|my\s+booking|my\s+bookings|when\s+is\s+my\s+booking|who\s+booked\s+me|who\s+is\s+my\s+customer)\b/i.test(lower);
+    const isBookingQuery = /\b(did\s+anyone\s+book\s+me|has\s+anyone\s+booked\s+me|anyone\s+book(ed)?\s+me|booked\s+me|book\s+me|have\s+(a\s+|any\s+)?booking|have\s+any\s+bookings|any\s+booking|any\s+bookings|am\s+i\s+booked|do\s+i\s+have\s+(a\s+|any\s+)?(job|booking|customer)|check\s+my\s+booking|my\s+booking|my\s+bookings|when\s+is\s+my\s+booking|who\s+booked\s+me|who\s+is\s+my\s+customer)\b/i.test(lower)
+        || /(?:क्या\s+कल|किसी\s+ने).*(?:बुक|बुकिंग|मुझे)/u.test(text)
+        || /(?:ಯಾರಾದರೂ|ಯಾರಾದ್ರೂ).*(?:ಬುಕ್|ಬುಕಿಂಗ್|ನಮಗೆ|ನನ್ನ)/u.test(text)
+        || /(?:बुक|ಬುಕ್).*(?:मुझे|ನಮಗೆ|ನನ್ನ)/u.test(text);
     const isWaitingForBookingPhone = draft.last_asked_field === 'phone_for_booking';
 
     if (isBookingQuery || isWaitingForBookingPhone) {
@@ -2663,7 +2853,7 @@ async function processWorkerTurn(session, text, actionsPerformed) {
     // Returning workers have a separate draft so no availability change is
     // written merely because speech recognition heard a time fragment.
     if (draft.awaiting_availability_confirmation) {
-        if (/^(yes|yeah|yep|sure|correct|right|okay|ok|done|ha|haudu|confirm|confirmed)\b/i.test(lower)) {
+        if (/^(yes|yeah|yep|sure|correct|right|okay|ok|done|ha|haudu|confirm|confirmed|ಹೌದು|ಹೌದಾ|हाँ|हां|हांबना)(?:\b|\s|$)/iu.test(lower)) {
             const pending = draft.pending_availability;
             const worker = pending && DB.getWorkerByPhone(draft.phone || workerPhone);
             if (!pending || !worker) {
@@ -2673,7 +2863,7 @@ async function processWorkerTurn(session, text, actionsPerformed) {
             const saveRes = DB.setWorkerAvailabilitySlot({
                 workerId: worker.id, workerPhone: worker.phone, trade: worker.trade,
                 dateStr: pending.date, startTime: pending.startTime, endTime: pending.endTime,
-                isAvailable: true
+                isAvailable: true, pattern: pending.pattern || 'once'
             });
             draft.awaiting_availability_confirmation = false;
             draft.pending_availability = null;
@@ -2692,22 +2882,20 @@ async function processWorkerTurn(session, text, actionsPerformed) {
     }
 
     if (draft.awaiting_confirmation) {
-        if (/^(yes|yeah|yep|sure|correct|right|okay|ok|done|ha|haudu|yes please|confirm|confirmed)\b/i.test(lower)) {
+        if (/^(yes|yeah|yep|sure|correct|right|okay|ok|done|ha|haudu|yes please|confirm|confirmed|ಹೌದು|ಹೌದಾ|हाँ|हां|हांबना)(?:\b|\s|$)/iu.test(lower)) {
             const writeResult = DB.registerOrUpdateWorker({
                 name: draft.name,
                 phone: draft.phone,
                 job_role: draft.job_role,
-                availability_date: draft.availability_date,
-                start_time: draft.start_time,
-                end_time: draft.end_time,
-                city: session.city || 'Ramanagara'
+                city: session.city || 'Ramanagara',
+                password: draft.password
             });
 
             if (writeResult && writeResult.persisted) {
                 const savedWorker = DB.getWorkerByPhone(draft.phone);
                 const savedTrade = (savedWorker && savedWorker.trade) || draft.job_role;
                 const savedNoun = getTradePersonNoun(savedTrade);
-                const timeDisplay = `${draft.start_display || draft.start_time} to ${draft.end_display || draft.end_time}`;
+                const savedTradeLabel = String(savedNoun).replace(/^an?\s+/i, '');
                 actionsPerformed.push(`Saved worker details to database and Firebase for ${draft.name} (${draft.phone})`);
                 draft.last_asked_field = null;
                 draft.completed = true;
@@ -2717,8 +2905,15 @@ async function processWorkerTurn(session, text, actionsPerformed) {
                 session.callerPhone = draft.phone;
                 session.callerRole = 'worker';
                 session.callerName = savedWorker ? savedWorker.name : draft.name;
+                session.voiceSignupComplete = true;
                 return {
-                    spokenResponse: `Done. Your details have been updated successfully. You are registered as ${savedNoun} and available ${draft.availability_date.toLowerCase()} from ${timeDisplay}.`,
+                    spokenResponse: session.isVoiceCall
+                        ? (session.language === 'KN'
+                            ? `ಆಯಿತು, ${draft.name}. ನಿಮ್ಮ ${savedTradeLabel} ಕೆಲಸಗಾರರ ಖಾತೆ ಯಶಸ್ವಿಯಾಗಿ ರಚಿಸಲಾಗಿದೆ. ಹಿಂದಿರುಗಿ ಫೋನ್ ಸಂಖ್ಯೆ ಮತ್ತು ಪಾಸ್‌ವರ್ಡ್ ಬಳಸಿ ಲಾಗಿನ್ ಮಾಡಿ, ನಂತರ ಡ್ಯಾಶ್‌ಬೋರ್ಡ್‌ನಲ್ಲಿ ಲಭ್ಯತೆಯನ್ನು ಹೊಂದಿಸಿ.`
+                            : session.language === 'HN'
+                                ? `हो गया, ${draft.name}. आपका ${savedTradeLabel} कामगार खाता सफलतापूर्वक बन गया है। वापस जाकर फोन नंबर और पासवर्ड से लॉगिन करें, फिर डैशबोर्ड में अपनी उपलब्धता सेट करें।`
+                                : `Done, ${draft.name}. Your ${savedTradeLabel} worker account was created successfully. Please go back and log in with your phone number and password, then set your availability from your worker dashboard.`)
+                        : `Done. Your details have been updated successfully. You are registered as ${savedNoun}.`,
                     detectedIntent: 'worker_updated',
                     toolExecuted: 'registerOrUpdateWorker',
                     toolResult: writeResult
@@ -2754,6 +2949,7 @@ async function processWorkerTurn(session, text, actionsPerformed) {
 
     const extractedTime = extractTimeWindow(text);
     const extractedDate = extractAvailabilityDate(text) || (lower.includes('tomorrow') ? 'Tomorrow' : (lower.includes('today') ? 'Today' : null));
+    const dailyAvailability = /(?:\bdaily\b|\bevery day\b|\beach day\b|रोज|हर दिन|प्रतिदिन|ಪ್ರತಿ ದಿನ|ಪ್ರತಿದಿನ)/iu.test(text);
 
     if (existingWorker && (extractedTime || extractedDate || draft.pending_availability)) {
         // An explicit new availability statement replaces an abandoned draft
@@ -2761,7 +2957,9 @@ async function processWorkerTurn(session, text, actionsPerformed) {
         const startsNewAvailability = /\b(available|availability|working hours|work from)\b/i.test(lower);
         const pending = startsNewAvailability ? {} : (draft.pending_availability || {});
         if (startsNewAvailability) draft.pending_availability = null;
-        const dateStr = extractedDate || pending.date || 'Tomorrow';
+        // A daily pattern needs a concrete range start for expansion; Today is
+        // the anchor while pattern='daily' makes it recur on future dates.
+        const dateStr = dailyAvailability ? 'Today' : (extractedDate || pending.date || 'Tomorrow');
 
         if (!extractedTime) {
             draft.pending_availability = { ...pending, date: dateStr };
@@ -2773,7 +2971,7 @@ async function processWorkerTurn(session, text, actionsPerformed) {
         // not an availability range. Preserve it and ask only for the end.
         if (extractedTime.startTime === extractedTime.endTime && !pending.startTime) {
             draft.pending_availability = {
-                date: dateStr, startTime: extractedTime.startTime, startDisplay: extractedTime.startDisplay
+                date: dateStr, pattern: dailyAvailability ? 'daily' : 'once', startTime: extractedTime.startTime, startDisplay: extractedTime.startDisplay
             };
             draft.last_asked_field = 'availability_end';
             return { spokenResponse: `You will start at ${extractedTime.startDisplay}. Until what time will you be available?`, detectedIntent: 'ask_availability_end' };
@@ -2783,7 +2981,7 @@ async function processWorkerTurn(session, text, actionsPerformed) {
         const startDisplay = pending.startDisplay || extractedTime.startDisplay;
         const endTime = pending.startTime ? extractedTime.startTime : extractedTime.endTime;
         const endDisplay = pending.startTime ? extractedTime.startDisplay : extractedTime.endDisplay;
-        draft.pending_availability = { date: dateStr, startTime, endTime, startDisplay, endDisplay };
+        draft.pending_availability = { date: dateStr, pattern: dailyAvailability ? 'daily' : 'once', startTime, endTime, startDisplay, endDisplay };
         draft.awaiting_availability_confirmation = true;
         draft.last_asked_field = 'availability_confirmation';
         return {
@@ -2794,6 +2992,14 @@ async function processWorkerTurn(session, text, actionsPerformed) {
 
     // If already registered worker, provide helpful assistant prompt instead of re-asking onboarding
     if (existingWorker) {
+        if (session.isVoiceCall) {
+            const loginPrompt = session.language === 'KN'
+                ? 'ನಿಮ್ಮ ಖಾತೆ ಯಶಸ್ವಿಯಾಗಿ ರಚಿಸಲಾಗಿದೆ. ದಯವಿಟ್ಟು ಫೋನ್ ಸಂಖ್ಯೆ ಮತ್ತು ಪಾಸ್‌ವರ್ಡ್ ಬಳಸಿ ಲಾಗಿನ್ ಮಾಡಿ.'
+                : session.language === 'HN'
+                    ? 'आपका खाता सफलतापूर्वक बन गया है। कृपया फोन नंबर और पासवर्ड से लॉगिन करें।'
+                    : 'Your account was created successfully. Please log in with your phone number and password.';
+            return { spokenResponse: loginPrompt, detectedIntent: 'login_required_after_signup' };
+        }
         return {
             spokenResponse: `I'm here to assist you, ${existingWorker.name}. You can say "Did anyone book me?", "Set availability tomorrow 9 to 5", "Check my earnings", or "What is my next job?".`,
             detectedIntent: 'worker_help'
@@ -2802,12 +3008,15 @@ async function processWorkerTurn(session, text, actionsPerformed) {
 
     // 7. New Worker Onboarding Extraction Loop (for unregistered workers)
     // Name
-    const extractedName = extractCallerName(text);
+    const collectingPassword = draft.last_asked_field === 'password';
+    const extractedName = (collectingPassword || (draft.name && draft.last_asked_field !== 'name')) ? null : extractCallerName(text);
     if (extractedName) {
         draft.name = extractedName;
         session.callerName = extractedName;
     } else if (draft.last_asked_field === 'name') {
-        const cleanName = text.replace(/^(my name is|name is|i am|i'm|this is|it's|its|call me)\s+/i, '').trim().replace(/[^a-zA-Z\s]/g, '').trim();
+        const hasNativeScript = /[\u0900-\u097F\u0C80-\u0CFF]/u.test(text);
+        const cleanName = text.replace(/^(my name is|name is|i am|i'm|this is|it's|its|call me|मेरा नाम|मेरा नाम है|ನನ್ನ ಹೆಸರು|ನನ್ನ ಹೆಸರು ಏನು)\s*/iu, '').trim()
+            .replace(hasNativeScript ? /[^\p{L}\s]/gu : /[^a-zA-Z\s]/g, '').trim();
         const nonNames = ['hello', 'hi', 'yes', 'no', 'ok', 'okay', 'sure', 'electrician', 'plumber', 'carpenter', 'mechanic', 'tomorrow', 'today'];
         if (cleanName.length >= 2 && !nonNames.includes(cleanName.toLowerCase())) {
             const formatted = cleanName.charAt(0).toUpperCase() + cleanName.slice(1).toLowerCase();
@@ -2817,14 +3026,14 @@ async function processWorkerTurn(session, text, actionsPerformed) {
     }
 
     // Phone
-    const extractedPhone = extractPhoneNumber(text);
+    const extractedPhone = collectingPassword ? null : extractPhoneNumber(text);
     if (extractedPhone) {
         draft.phone = extractedPhone;
         session.callerPhone = extractedPhone;
     }
 
     // Job Role
-    const extractedTrade = extractTradeAndService(text);
+    const extractedTrade = collectingPassword ? null : extractTradeAndService(text);
     if (extractedTrade) {
         draft.job_role = extractedTrade;
     } else if (draft.last_asked_field === 'job_role') {
@@ -2833,7 +3042,7 @@ async function processWorkerTurn(session, text, actionsPerformed) {
     }
 
     // Date
-    if (extractedDate) {
+    if (!collectingPassword && extractedDate) {
         draft.availability_date = extractedDate;
     } else if (draft.last_asked_field === 'availability_date') {
         const d = extractAvailabilityDate(text);
@@ -2841,7 +3050,7 @@ async function processWorkerTurn(session, text, actionsPerformed) {
     }
 
     // Time
-    if (extractedTime) {
+    if (!collectingPassword && extractedTime) {
         const isSingleTime = extractedTime.startTime === extractedTime.endTime;
         if (isSingleTime && draft.start_time && !draft.end_time) {
             // The caller is answering the precise follow-up: "until when?"
@@ -2861,6 +3070,13 @@ async function processWorkerTurn(session, text, actionsPerformed) {
         }
     }
 
+    // Password is collected explicitly for new worker accounts. Never infer or
+    // invent one: the caller must provide it so they can log in later.
+    if (!draft.password && draft.last_asked_field === 'password') {
+        const candidate = text.trim().replace(/^(my password is|password is|password|पासवर्ड है|पासवर्ड|ಪಾಸ್‌ವರ್ಡ್)\s*/iu, '').trim();
+        if (candidate.length >= 6 && !/\s/.test(candidate)) draft.password = candidate;
+    }
+
     // Determine next missing field
     if (!draft.name) {
         draft.last_asked_field = 'name';
@@ -2874,11 +3090,11 @@ async function processWorkerTurn(session, text, actionsPerformed) {
         draft.last_asked_field = 'phone';
         return { spokenResponse: workerPrompt(session, 'phone', 'What is your 10-digit phone number?'), detectedIntent: 'ask_phone' };
     }
-    if (!draft.availability_date) {
+    if (!session.isVoiceCall && !draft.availability_date) {
         draft.last_asked_field = 'availability_date';
         return { spokenResponse: workerPrompt(session, 'date', 'What date are you available?'), detectedIntent: 'ask_date' };
     }
-    if (!draft.start_time || !draft.end_time) {
+    if (!session.isVoiceCall && (!draft.start_time || !draft.end_time)) {
         const askingForEnd = Boolean(draft.start_time && !draft.end_time);
         draft.last_asked_field = askingForEnd ? 'end_time' : 'time';
         return {
@@ -2889,13 +3105,31 @@ async function processWorkerTurn(session, text, actionsPerformed) {
         };
     }
 
-    // ALL 5 FIELDS PRESENT -> CONFIRM
-    const timeDisplay = `${draft.start_display || draft.start_time} to ${draft.end_display || draft.end_time}`;
+    if (!draft.password) {
+        draft.last_asked_field = 'password';
+        return { spokenResponse: workerPrompt(session, 'password', 'Please create a password with at least 6 characters for your worker login.'), detectedIntent: 'ask_password' };
+    }
+
+    // All required fields are present -> confirm
+    const timeDisplay = draft.start_time && draft.end_time
+        ? `${draft.start_display || draft.start_time} to ${draft.end_display || draft.end_time}` : null;
     const personNoun = getTradePersonNoun(draft.job_role);
+    const tradeText = String(draft.job_role || '').toLowerCase();
+    const localizedNoun = session.language === 'HN'
+        ? (tradeText.includes('tailor') ? 'दर्जी' : tradeText.includes('plumb') ? 'प्लंबर' : tradeText.includes('carp') ? 'बढ़ई' : tradeText.includes('mechan') ? 'मैकेनिक' : tradeText.includes('paint') ? 'पेंटर' : tradeText.includes('clean') ? 'सफाईकर्मी' : personNoun)
+        : session.language === 'KN'
+            ? (tradeText.includes('tailor') ? 'ಟೈಲರ್' : tradeText.includes('plumb') ? 'ಪ್ಲಂಬರ್' : tradeText.includes('carp') ? 'ಕಾರ್ಪೆಂಟರ್' : tradeText.includes('mechan') ? 'ಮೆಕ್ಯಾನಿಕ್' : tradeText.includes('paint') ? 'ಪೇಂಟರ್' : tradeText.includes('clean') ? 'ಕ್ಲೀನರ್' : personNoun)
+            : personNoun;
     draft.awaiting_confirmation = true;
     draft.last_asked_field = 'confirmation';
     return {
-        spokenResponse: `Just to confirm, ${draft.name}, you are ${personNoun} and you are available ${draft.availability_date.toLowerCase()} from ${timeDisplay}. Is that correct?`,
+        spokenResponse: session.isVoiceCall
+            ? (session.language === 'HN'
+                ? `पुष्टि करें: आपका नाम ${draft.name} है और आप ${localizedNoun} के रूप में पंजीकरण कर रहे हैं। क्या मैं आपका कामगार खाता बनाऊँ?`
+                : session.language === 'KN'
+                    ? `ದೃಢೀಕರಿಸಿ: ನಿಮ್ಮ ಹೆಸರು ${draft.name} ಮತ್ತು ನೀವು ${localizedNoun} ಆಗಿ ನೋಂದಾಯಿಸಿಕೊಳ್ಳುತ್ತಿದ್ದೀರಿ. ನಿಮ್ಮ ಕೆಲಸಗಾರರ ಖಾತೆಯನ್ನು ರಚಿಸಬೇಕೇ?`
+                    : `Just to confirm, your name is ${draft.name} and you are registering as ${localizedNoun}. Shall I create your worker account?`)
+            : `Just to confirm, ${draft.name}, you are ${personNoun} and you are available ${draft.availability_date.toLowerCase()} from ${timeDisplay}. Is that correct?`,
         detectedIntent: 'ask_confirmation'
     };
 }
@@ -2943,10 +3177,18 @@ class ContextAwareVoiceAgent {
 
         const session = (optsOrSession && optsOrSession.context && optsOrSession.history)
             ? optsOrSession
-            : sessionManager.getSession(sessionId, { callerPhone, callerRole, callerName, city: targetCity, language });
+            : sessionManager.getSession(sessionId, { callerPhone, callerRole, callerName, city: targetCity, language, portal, isVoiceCall });
 
         session.city = targetCity;
-        session.callerRole = callerRole || session.callerRole || 'customer';
+        session.isVoiceCall = Boolean(isVoiceCall || portal === 'terminal' || session.isVoiceCall);
+        // A signed-in dashboard session is authenticated; the login-only
+        // message is reserved for the anonymous post-signup terminal state.
+        if (callerPhone && String(callerPhone).toLowerCase() !== 'anonymous' && callerRole === 'worker') {
+            session.voiceSignupComplete = false;
+        }
+        if (!(portal === 'terminal' && session.terminalAccountChoice)) {
+            session.callerRole = callerRole || session.callerRole || 'customer';
+        }
         session.context.currentLocation = targetCity;
         const languageValue = String(language || '').trim().toUpperCase();
         const requestedLanguage = /^(KN|KANNADA)$/.test(languageValue) ? 'KN'
@@ -2961,17 +3203,67 @@ class ContextAwareVoiceAgent {
         else if (requestedLanguage) session.language = requestedLanguage;
         else session.language = session.language || 'EN';
         sessionManager.addTurn(session, 'user', text);
-
         let spokenResponse = '';
+        const actionsPerformed = [];
+
+        // A new anonymous terminal session must establish whether this is a
+        // customer or worker signup before asking for any personal details.
+        if (session.isVoiceCall && portal === 'terminal' && !session.terminalAccountChoice) {
+            const normalizedChoice = text.toLowerCase().trim();
+            // Do not use \b around Indic scripts: JavaScript word boundaries
+            // are ASCII-oriented and fail for forms such as ಗ್ರಾಹಕರ/कामगार।
+            const workerChoice = /\b(workers?|worker account)\b/i.test(normalizedChoice)
+                || ['कामगार', 'कर्मचारी', 'मजदूर', 'ಕೆಲಸಗಾರ', 'ಕೆಲಸಗಾರರ', 'ಕಾರ್ಮಿಕ', 'ಕೆಲಸ ಮಾಡುವ', 'kamgar', 'karmachari', 'mazdoor'].some(term => normalizedChoice.includes(term));
+            const customerChoice = /\b(customers?|customer account)\b/i.test(normalizedChoice)
+                || ['ग्राहक', 'ग्राहक खाता', 'ग्राहकों', 'ग्राहक का', 'ಗ್ರಾಹಕ', 'ಗ್ರಾಹಕರ', 'ಗ್ರಾಹಕರ ಖಾತೆ', 'grahak', 'graahak', 'customer account'].some(term => normalizedChoice.includes(term));
+            if (workerChoice || customerChoice) {
+                session.terminalAccountChoice = workerChoice ? 'worker' : 'customer';
+                session.callerRole = session.terminalAccountChoice;
+                session.workerDraft = { name: null, job_role: null, phone: null, availability_date: null, start_time: null, end_time: null, start_display: null, end_display: null, password: null, last_asked_field: 'name', completed: false, awaiting_confirmation: false };
+                session.customerDraft = {};
+                const ask = session.terminalAccountChoice === 'worker'
+                    ? (session.language === 'KN' ? 'ನಿಮ್ಮ ಹೆಸರು ಏನು?' : session.language === 'HN' ? 'आपका नाम क्या है?' : 'What is your name?')
+                    : (session.language === 'KN' ? 'ನಿಮ್ಮ ಹೆಸರು ಏನು?' : session.language === 'HN' ? 'आपका नाम क्या है?' : 'What is your name?');
+                spokenResponse = ask;
+            } else {
+                spokenResponse = session.language === 'KN'
+                    ? 'ನಾನು GigSync ನಿಮ್ಮ ಸಹಾಯಕ. ಇಂದು ನೀವು ಯಾವ ರೀತಿಯ ಖಾತೆಯನ್ನು ರಚಿಸಲು ಬಯಸುತ್ತೀರಿ — ಕೆಲಸಗಾರರ ಖಾತೆಯೇ ಅಥವಾ ಗ್ರಾಹಕರ ಖಾತೆಯೇ?'
+                    : session.language === 'HN'
+                        ? 'मैं GigSync आपका सहायक हूँ। आज आप किस प्रकार का खाता बनाना चाहते हैं — कामगार या ग्राहक?'
+                        : "I'm GigSync, your assistant. What type of account would you like to create today — worker or customer?";
+            }
+            if (spokenResponse) {
+                sessionManager.addTurn(session, 'assistant', spokenResponse);
+                sessionManager.saveSession(session);
+                return { spokenResponse, language: session.language, detectedIntent: 'account_type_selection', actionsPerformed };
+            }
+        }
+
         let toolExecuted = null;
         let toolResult = null;
         let detectedIntent = 'unknown';
         let extractedEntities = {};
         let shouldEndCall = false;
-        const actionsPerformed = [];
+
+        // Profile read-backs are database reads, not generative answers. Run
+        // them through the deterministic worker path so Gemini cannot return
+        // an English prompt, stale details, or an invented profile after a
+        // Kannada/Hindi language switch.
+        const profileReadback = session.callerRole === 'worker' && (
+            /\b(?:my\s+(?:details|profile|information|profile details|personal details|personal information|account details)|what details do you have about me|give me my (?:personal )?details|who am i registered as|what is my phone|what is my name|what trade am i|what is my job|what is my profession|what do i do)\b/i.test(text)
+            || /(?:मेरी जानकारी|मेरी प्रोफाइल|मेरे विवरण|मेरे डिटेल|मैं किस नाम से|मेरा फोन|मेरा नाम|मेरा काम|मेरा पेशा|मैं क्या काम करता|मेरी जानकारी बताइए)/u.test(text)
+            || /(?:ನನ್ನ ವಿವರ|ನನ್ನ ಪ್ರೊಫೈಲ್|ನನ್ನ ಮಾಹಿತಿ|ನನ್ನ ಡೀಟೇಲ್ಸ್|ನನ್ನ ಹೆಸರು|ನನ್ನ ಫೋನ್|ನನ್ನ ಕೆಲಸ|ನನ್ನ ವೃತ್ತಿ|ನಾನು ಯಾವ ಕೆಲಸ|ನನ್ನ ವಿವರಗಳನ್ನು ಹೇಳಿ)/u.test(text)
+        );
+        if (profileReadback) {
+            const workerTurn = await processWorkerTurn(session, text, actionsPerformed);
+            spokenResponse = workerTurn.spokenResponse;
+            toolExecuted = workerTurn.toolExecuted || null;
+            toolResult = workerTurn.toolResult || null;
+            detectedIntent = workerTurn.detectedIntent || 'worker_profile_details';
+        }
 
         // 1. Direct Gemini 3.6 Flash Engine Execution
-        const geminiClient = geminiBrain.getClient();
+        const geminiClient = spokenResponse ? null : geminiBrain.getClient();
         if (geminiClient) {
             try {
                 const geminiTurn = await geminiBrain.processTurn({ session, text });
@@ -3012,6 +3304,10 @@ class ContextAwareVoiceAgent {
                 shouldEndCall = customerTurn.shouldEndCall || false;
             }
         }
+
+        spokenResponse = session.callerRole === 'worker'
+            ? localizeWorkerFallback(spokenResponse, session.language)
+            : localizeCustomerFallback(spokenResponse, session.language);
 
         // Add assistant turn to session memory
         sessionManager.addTurn(session, 'assistant', spokenResponse);

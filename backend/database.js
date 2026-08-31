@@ -421,6 +421,33 @@ const DB = {
         const pHash = hashPassword(password);
 
         if (!db) {
+            const existingUser = memoryStore.users.find(u => u.phone === cleanPhone);
+            if (existingUser) {
+                Object.assign(existingUser, {
+                    name: name || existingUser.name,
+                    email: email || existingUser.email,
+                    role: role || existingUser.role,
+                    password_hash: pHash || existingUser.password_hash,
+                    city: city || existingUser.city,
+                    area: area || existingUser.area
+                });
+                if (role === 'worker') {
+                    const existingWorker = memoryStore.workers.find(w => w.phone === cleanPhone);
+                    if (existingWorker) {
+                        existingWorker.user_id = existingUser.id;
+                        existingWorker.name = name || existingWorker.name;
+                        existingWorker.city = city || existingWorker.city;
+                        existingWorker.area = area || existingWorker.area;
+                    } else {
+                        const initials = (name || existingUser.name || 'WK').split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase() || 'WK';
+                        const worker = { id: memoryStore.workers.length + 1, user_id: existingUser.id, name: name || existingUser.name, phone: cleanPhone, trade: 'General Specialist', service: 'general', initials, city, area, service_areas: `${city}, Nearby Areas`, rating: 5.0, km: 1.5, jobs_completed: 0, price: 300, is_available: 1, is_verified: 1, skills: '', tools: 'Standard tool kit', experience_years: 2, about: '' };
+                        memoryStore.workers.push(worker);
+                    }
+                }
+                FirebaseSync.syncUser(existingUser).catch(e => console.warn('[Firebase Sync Error]:', e));
+                return existingUser;
+            }
+
             const userId = memoryStore.users.length + 1;
             const user = { id: userId, name, phone: cleanPhone, email: email || null, role, password_hash: pHash, city, area, created_at: new Date().toISOString() };
             memoryStore.users.push(user);
@@ -436,6 +463,13 @@ const DB = {
                 FirebaseSync.syncCustomer(cust).catch(e => console.warn('[Firebase Sync Error]:', e));
             }
             return user;
+        }
+
+        const existingSqlUser = db.prepare('SELECT * FROM users WHERE phone = ?').get(cleanPhone);
+        if (existingSqlUser) {
+            db.prepare('UPDATE users SET name = ?, email = ?, role = ?, password_hash = ?, city = ?, area = ? WHERE id = ?')
+                .run(name || existingSqlUser.name, email || existingSqlUser.email, role || existingSqlUser.role, pHash || existingSqlUser.password_hash, city || existingSqlUser.city, area || existingSqlUser.area, existingSqlUser.id);
+            return this.getUserByPhone(cleanPhone);
         }
 
         const stmt = db.prepare(`
@@ -503,6 +537,16 @@ const DB = {
             return memoryStore.customers.find(c => c.id === Number(id)) || null;
         }
         return db.prepare('SELECT * FROM customers WHERE id = ?').get(id) || null;
+    },
+
+    getCustomerByPhone(phone) {
+        if (!phone) return null;
+        const cleanPhone = String(phone).replace(/\D/g, '');
+        const last10 = cleanPhone.slice(-10);
+        if (!db) {
+            return memoryStore.customers.find(c => c.phone === cleanPhone || c.phone === phone || (c.phone && c.phone.endsWith(last10))) || null;
+        }
+        return db.prepare('SELECT * FROM customers WHERE phone = ? OR phone = ? OR phone LIKE ?').get(phone, cleanPhone, `%${last10}`) || null;
     },
 
     authenticateUser(phone, password) {
@@ -580,6 +624,10 @@ const DB = {
                 profile: extraProfile
             }
         };
+    },
+
+    registerUser({ name, phone, password, role, city = 'Ramanagara', area = 'Town', email = null }) {
+        return this.createUser({ name, phone, password, role, city, area, email });
     },
 
     updateCustomerProfile(phoneOrId, updates = {}) {
@@ -865,11 +913,12 @@ const DB = {
         }
     },
 
-    registerWorkerProfile({ name, phone, trade, city = 'Ramanagara', area = 'Town', tools = 'Standard tool kit', price = 300, experienceYears = 2, skills = '' }) {
+    registerWorkerProfile({ name, phone, trade, city = 'Ramanagara', area = 'Town', tools = 'Standard tool kit', price = 300, experienceYears = 2, skills = '', password = null }) {
         const cleanPhone = (phone || '').replace(/\D/g, '');
         if (!cleanPhone) return null;
 
         let existingWorker = this.getWorkerByPhone(cleanPhone);
+        let existingUser = this.getUserByPhone ? this.getUserByPhone(cleanPhone) : null;
         if (existingWorker) {
             const updated = this.updateWorkerProfile(existingWorker.id, {
                 name: name || existingWorker.name,
@@ -879,6 +928,28 @@ const DB = {
                 tools: tools || existingWorker.tools,
                 price: price || existingWorker.price
             });
+
+            if (password && existingUser) {
+                const newHash = hashPassword(password);
+                if (!db) {
+                    existingUser.password_hash = newHash;
+                } else {
+                    db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(newHash, existingUser.id);
+                    existingUser.password_hash = newHash;
+                }
+            }
+            if (!existingUser && this.createUser) {
+                try {
+                    existingUser = this.createUser({
+                        name: name || existingWorker.name || 'Worker',
+                        phone: cleanPhone,
+                        role: 'worker',
+                        password: password || 'worker@gigsync',
+                        city: city || existingWorker.city || 'Ramanagara',
+                        area: area || existingWorker.area || 'Town'
+                    });
+                } catch (_) {}
+            }
             // Re-read from storage: 'persisted' must describe what is actually stored,
             // not what we hoped the UPDATE did.
             const readBack = this.getWorkerByPhone(cleanPhone);
@@ -894,7 +965,6 @@ const DB = {
             };
         }
 
-        let existingUser = this.getUserByPhone ? this.getUserByPhone(cleanPhone) : null;
         let userId = existingUser ? existingUser.id : null;
 
         if (!userId && this.createUser) {
@@ -903,7 +973,7 @@ const DB = {
                     name: name || 'Worker',
                     phone: cleanPhone,
                     role: 'worker',
-                    password: 'worker@gigsync',
+                    password: password || 'worker@gigsync',
                     city,
                     area
                 });
@@ -943,7 +1013,7 @@ const DB = {
         };
     },
 
-    registerOrUpdateWorker({ name, phone, job_role, availability_date, start_time, end_time, city = 'Ramanagara' }) {
+    registerOrUpdateWorker({ name, phone, job_role, availability_date, start_time, end_time, city = 'Ramanagara', password = null }) {
         const cleanPhone = (phone || '').replace(/\D/g, '');
         if (!cleanPhone || cleanPhone.length !== 10) {
             return { success: false, persisted: false, error: 'A valid 10-digit phone number is required.' };
@@ -952,18 +1022,22 @@ const DB = {
         const trade = job_role || 'Skilled Specialist';
         let worker = this.getWorkerByPhone(cleanPhone);
         if (worker) {
-            this.updateWorkerProfile(worker.id, {
+            // Reuse the profile upsert so a password supplied by voice
+            // onboarding is persisted for an already-existing worker too.
+            this.registerWorkerProfile({
                 name: name || worker.name,
+                phone: cleanPhone,
                 trade: trade,
                 city: city || worker.city || 'Ramanagara',
-                is_available: 1
+                password
             });
         } else {
             this.registerWorkerProfile({
                 name: name || 'Worker',
                 phone: cleanPhone,
                 trade: trade,
-                city: city || 'Ramanagara'
+                city: city || 'Ramanagara',
+                password
             });
         }
 
@@ -1492,7 +1566,7 @@ const DB = {
 
             const matchingSlots = [];
             for (const s of slots) {
-                if (String(s.date_str).toLowerCase() === reqDateStr.toLowerCase()) {
+                if (normalizeDateKey(s.date_str).toLowerCase() === reqDateStr.toLowerCase()) {
                     matchingSlots.push(s);
                     continue;
                 }
@@ -1518,7 +1592,8 @@ const DB = {
 
         // SQLite Implementation
         // 1. Fetch all active availability records for this worker
-        const wPhone = String(workerId).replace(/\D/g, '');
+        const workerRow = db.prepare('SELECT phone FROM workers WHERE id = ?').get(Number(workerId));
+        const wPhone = workerRow && workerRow.phone ? String(workerRow.phone).replace(/\D/g, '') : String(workerId).replace(/\D/g, '');
         const allSlots = db.prepare(`
             SELECT * FROM worker_availability
             WHERE (worker_id = ? OR worker_phone = ?)
@@ -1528,7 +1603,7 @@ const DB = {
 
         const matchingSlots = [];
         for (const s of allSlots) {
-            if (s.date_str && s.date_str.toLowerCase() === reqDateStr.toLowerCase()) {
+            if (s.date_str && normalizeDateKey(s.date_str).toLowerCase() === reqDateStr.toLowerCase()) {
                 matchingSlots.push(s);
                 continue;
             }
@@ -1542,12 +1617,14 @@ const DB = {
         if (!matchingSlots.some(s => reqMin >= parseTimeToMinutes(s.start_time) && reqMin <= parseTimeToMinutes(s.end_time))) return 'OutsideHours';
 
         // 2. Check conflicting jobs
+        // Older rows may contain labels such as "Tomorrow" while newer rows
+        // use ISO dates. Read both and normalize in JavaScript so conflict
+        // detection and the worker booking list always use the same identity.
         const jobs = db.prepare(`
-            SELECT requested_time FROM jobs
+            SELECT requested_date, requested_time FROM jobs
             WHERE (worker_id = ? OR worker_phone = ?)
-              AND requested_date = ?
               AND status IN ('Confirmed', 'Accepted', 'On the Way', 'In Progress')
-        `).all(Number(workerId), wPhone, reqDateStr);
+        `).all(Number(workerId), wPhone).filter(j => normalizeDateKey(j.requested_date).toLowerCase() === reqDateStr.toLowerCase());
 
         for (const j of jobs) {
             const jMin = parseTimeToMinutes(j.requested_time);

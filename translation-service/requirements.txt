@@ -1,0 +1,5 @@
+Flask>=3.0,<4
+torch>=2.2
+transformers>=4.40,<5
+sentencepiece>=0.2
+IndicTransToolkit @ git+https://github.com/AI4Bharat/IndicTransToolkit.git

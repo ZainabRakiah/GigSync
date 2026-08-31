@@ -26,8 +26,10 @@
     --gs-border-focus: #818CF8;
     
     --gs-text: #0F172A;
+    --gs-text-main: #0F172A;
     --gs-text-secondary: #475569;
     --gs-muted: #94A3B8;
+    --gs-surface: #F8FAFC;
 
     --gs-radius-sm: 8px;
     --gs-radius-md: 12px;
@@ -261,6 +263,11 @@ button {
     font-size: 12.5px;
     font-weight: 600;
     color: var(--gs-text-secondary);
+}
+
+.field-optional {
+    font-weight: 500;
+    color: var(--gs-muted);
 }
 
 .field-hint {
@@ -1521,10 +1528,11 @@ button {
     background: rgba(15, 23, 42, 0.6);
     backdrop-filter: blur(4px);
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: center;
-    padding: 16px;
+    padding: clamp(16px, 7vh, 72px) 16px 24px;
     z-index: 100;
+    overflow-y: auto;
 }
 
 .modal-card {
@@ -1535,6 +1543,9 @@ button {
     box-shadow: var(--gs-shadow-xl);
     overflow: hidden;
     animation: modalIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    max-height: calc(100vh - 32px);
+    display: flex;
+    flex-direction: column;
 }
 
 @keyframes modalIn {
@@ -1548,6 +1559,7 @@ button {
     justify-content: space-between;
     padding: 18px 20px;
     border-bottom: 1px solid var(--gs-border);
+    flex-shrink: 0;
 }
 
 .modal-header h3 {
@@ -1558,15 +1570,23 @@ button {
 }
 
 .modal-close-btn {
-    background: none;
+    width: 34px;
+    height: 34px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--gs-bg);
+    border: 1px solid var(--gs-border);
+    border-radius: 50%;
     color: var(--gs-muted);
-    font-size: 18px;
-    padding: 4px;
+    font-size: 15px;
     transition: color 0.15s ease;
 }
 
 .modal-close-btn:hover {
     color: var(--gs-dark);
+    border-color: var(--gs-primary);
+    background: var(--gs-primary-light);
 }
 
 .modal-form, .modal-body {
@@ -1574,6 +1594,52 @@ button {
     display: flex;
     flex-direction: column;
     gap: 16px;
+    overflow-y: auto;
+}
+
+.modal-eyebrow {
+    display: block;
+    margin-bottom: 3px;
+    color: var(--gs-primary);
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: .08em;
+}
+
+.modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    padding-top: 2px;
+}
+
+.modal-actions .btn {
+    min-width: 120px;
+}
+
+.direct-book-card {
+    max-width: 480px;
+}
+
+.direct-book-summary {
+    margin: -2px 0 2px;
+    padding: 12px 14px;
+    border: 1px solid #C7D2FE;
+    border-radius: var(--gs-radius-md);
+    background: var(--gs-primary-light);
+    color: #3730A3;
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+.guest-booking-fields {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+}
+
+.direct-book-body .form-row-2 {
+    align-items: start;
 }
 
 /* City Grid Modal */
@@ -1963,14 +2029,14 @@ button {
 .avail-slot-info { color: var(--gs-text-secondary); }
 
 /* ---- Conflict resolution modal ---- */
-.conflict-modal-card { max-width: 500px; width: 92vw; }
+.conflict-modal-card { max-width: 560px; width: 92vw; }
 .conflict-modal-desc {
     font-size: 13.5px;
     color: var(--gs-text-secondary);
     margin: 0 0 16px;
     line-height: 1.5;
 }
-.conflict-jobs-list { display: flex; flex-direction: column; gap: 10px; }
+.conflict-jobs-list { display: flex; flex-direction: column; gap: 10px; max-height: min(540px, calc(100vh - 250px)); overflow-y: auto; padding-right: 4px; }
 .conflict-job-card {
     border: 1px solid var(--gs-border);
     border-radius: 10px;
@@ -2208,6 +2274,26 @@ button {
 }
 
 @media (max-width: 560px) {
+    .modal-backdrop {
+        padding: 12px;
+    }
+
+    .modal-card {
+        max-height: calc(100vh - 24px);
+    }
+
+    .guest-booking-fields {
+        grid-template-columns: 1fr;
+    }
+
+    .modal-actions {
+        flex-direction: column-reverse;
+    }
+
+    .modal-actions .btn {
+        width: 100%;
+    }
+
     .gigsync-language-switcher {
         right: 10px;
         bottom: 10px;

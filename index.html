@@ -194,7 +194,6 @@
                                 <span id="dropdownUserRole">Customer</span>
                             </div>
                             <hr class="divider">
-                            <hr class="divider">
                             <button type="button" class="dropdown-item logout" id="dropdownLogoutBtn"><i class="fa-solid fa-right-from-bracket"></i> Logout</button>
                         </div>
                     </div>
@@ -340,7 +339,6 @@
                                 <strong id="wDropdownName">Rumais</strong>
                                 <span id="wDropdownTrade">Electrician</span>
                             </div>
-                            <hr class="divider">
                             <hr class="divider">
                             <button type="button" class="dropdown-item logout" id="workerLogoutBtn"><i class="fa-solid fa-right-from-bracket"></i> Logout</button>
                         </div>
@@ -743,18 +741,49 @@
                 </div>
 
                 <div class="form-field">
-                    <label class="field-label" for="newJobDescription">Description</label>
-                    <textarea id="newJobDescription" class="field-input" rows="3" placeholder="Describe what needs repair or installation..." required></textarea>
+                    <label class="field-label" for="newJobDescription">Description <span class="field-optional">(Optional)</span></label>
+                    <textarea id="newJobDescription" class="field-input" rows="3" placeholder="Describe what needs repair or installation..."></textarea>
+                </div>
+
+                <div class="form-field">
+                    <label class="field-label" for="newJobDate">Date</label>
+                    <input type="date" id="newJobDate" class="field-input" required>
                 </div>
 
                 <div class="form-row-2">
                     <div class="form-field">
-                        <label class="field-label" for="newJobDate">Date</label>
-                        <input type="text" id="newJobDate" class="field-input" value="Today" required>
+                        <label class="field-label" for="newJobTime">Start Time</label>
+                        <select id="newJobTime" class="field-input" required>
+                            <option value="Immediate" selected>As soon as possible</option>
+                            <option value="08:00 AM">08:00 AM</option>
+                            <option value="09:00 AM">09:00 AM</option>
+                            <option value="10:00 AM">10:00 AM</option>
+                            <option value="11:00 AM">11:00 AM</option>
+                            <option value="12:00 PM">12:00 PM</option>
+                            <option value="01:00 PM">01:00 PM</option>
+                            <option value="02:00 PM">02:00 PM</option>
+                            <option value="03:00 PM">03:00 PM</option>
+                            <option value="04:00 PM">04:00 PM</option>
+                            <option value="05:00 PM">05:00 PM</option>
+                            <option value="06:00 PM">06:00 PM</option>
+                        </select>
                     </div>
                     <div class="form-field">
-                        <label class="field-label" for="newJobTime">Time</label>
-                        <input type="text" id="newJobTime" class="field-input" value="Immediate" required>
+                        <label class="field-label" for="newJobEndTime">End Time</label>
+                        <select id="newJobEndTime" class="field-input" required>
+                            <option value="09:00 AM">09:00 AM</option>
+                            <option value="10:00 AM">10:00 AM</option>
+                            <option value="11:00 AM">11:00 AM</option>
+                            <option value="12:00 PM">12:00 PM</option>
+                            <option value="01:00 PM">01:00 PM</option>
+                            <option value="02:00 PM">02:00 PM</option>
+                            <option value="03:00 PM">03:00 PM</option>
+                            <option value="04:00 PM">04:00 PM</option>
+                            <option value="05:00 PM" selected>05:00 PM</option>
+                            <option value="06:00 PM">06:00 PM</option>
+                            <option value="07:00 PM">07:00 PM</option>
+                            <option value="08:00 PM">08:00 PM</option>
+                        </select>
                     </div>
                 </div>
 
@@ -872,9 +901,15 @@
 
     <!-- 2b. CONFLICT RESOLUTION MODAL (WORKER — shown after availability edit) -->
     <div id="workerConflictModal" class="modal-backdrop hidden">
-        <div class="modal-card conflict-modal-card">
+        <div class="modal-card conflict-modal-card" role="dialog" aria-modal="true" aria-labelledby="conflictModalTitle">
             <div class="modal-header">
-                <h3><i class="fa-solid fa-triangle-exclamation" style="color:#f59e0b"></i> Affected Bookings</h3>
+                <div>
+                    <span class="modal-eyebrow">SCHEDULE CHECK</span>
+                    <h3 id="conflictModalTitle"><i class="fa-solid fa-triangle-exclamation" style="color:#f59e0b"></i> Affected Bookings</h3>
+                </div>
+                <button type="button" class="modal-close-btn" id="closeConflictModalBtn" aria-label="Close affected bookings dialog">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
             </div>
             <p class="conflict-modal-desc">
                 You have booked jobs that fall on dates no longer covered by your new schedule.
@@ -911,15 +946,10 @@
                 <i class="fa-solid fa-circle-check" style="color:var(--gs-primary)"></i>
                 <span id="calDateText"></span>
             </div>
-            <div id="calWorkersPanel" class="cal-workers-panel hidden">
-                <p class="cal-workers-heading">Available Specialists</p>
-                <div id="calWorkersList" class="cal-workers-list"></div>
-            </div>
 
-            <!-- Time selector (shown once a worker is picked) -->
-            <div id="calTimeRow" class="form-row-2 hidden" style="margin-top:12px">
+            <div id="calSlotRow" class="form-row-2 hidden" style="margin-top:12px">
                 <div class="form-field">
-                    <label class="field-label" for="calTimeSelect">Preferred Time</label>
+                    <label class="field-label" for="calTimeSelect">Preferred Start Time</label>
                     <select id="calTimeSelect" class="field-input">
                         <option value="08:00 AM">08:00 AM</option>
                         <option value="09:00 AM">09:00 AM</option>
@@ -933,9 +963,104 @@
                         <option value="05:00 PM">05:00 PM</option>
                     </select>
                 </div>
-                <div class="form-field" style="display:flex;align-items:flex-end">
-                    <button type="button" class="btn btn-primary btn-block" id="calConfirmBookingBtn">
-                        <i class="fa-solid fa-check"></i> Confirm
+                <div class="form-field">
+                    <label class="field-label" for="calEndTimeSelect">Preferred End Time</label>
+                    <select id="calEndTimeSelect" class="field-input">
+                        <option value="09:00 AM">09:00 AM</option>
+                        <option value="10:00 AM">10:00 AM</option>
+                        <option value="11:00 AM">11:00 AM</option>
+                        <option value="12:00 PM">12:00 PM</option>
+                        <option value="01:00 PM">01:00 PM</option>
+                        <option value="02:00 PM">02:00 PM</option>
+                        <option value="03:00 PM">03:00 PM</option>
+                        <option value="04:00 PM">04:00 PM</option>
+                        <option value="05:00 PM" selected>05:00 PM</option>
+                        <option value="06:00 PM">06:00 PM</option>
+                        <option value="07:00 PM">07:00 PM</option>
+                        <option value="08:00 PM">08:00 PM</option>
+                    </select>
+                </div>
+            </div>
+            <div id="calWorkersPanel" class="cal-workers-panel hidden">
+                <p class="cal-workers-heading">Available Specialists</p>
+                <div id="calWorkersList" class="cal-workers-list"></div>
+            </div>
+
+            <div id="calTimeRow" class="modal-actions hidden" style="margin-top:12px">
+                <button type="button" class="btn btn-primary btn-block" id="calConfirmBookingBtn">
+                    <i class="fa-solid fa-check"></i> Confirm Booking
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 2d. DIRECT SPECIALIST BOOKING CONFIRMATION -->
+    <div id="directBookModal" class="modal-backdrop hidden" aria-hidden="true">
+        <div class="modal-card direct-book-card" role="dialog" aria-modal="true" aria-labelledby="_dbmTitle">
+            <div class="modal-header">
+                <div>
+                    <span class="modal-eyebrow">BOOKING DETAILS</span>
+                    <h3 id="_dbmTitle">Book a Specialist</h3>
+                </div>
+                <button type="button" class="modal-close-btn" id="closeDirectBookModalBtn" aria-label="Close booking dialog">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+            <div class="modal-body direct-book-body">
+                <p id="_dbmSub" class="direct-book-summary"></p>
+                <div class="guest-booking-fields hidden" id="guestBookingFields">
+                    <div class="form-field">
+                        <label class="field-label" for="_dbmCustomerName">Your name</label>
+                        <input id="_dbmCustomerName" class="field-input" type="text" autocomplete="name" placeholder="Enter your name">
+                    </div>
+                    <div class="form-field">
+                        <label class="field-label" for="_dbmCustomerPhone">Mobile number</label>
+                        <input id="_dbmCustomerPhone" class="field-input" type="tel" inputmode="numeric" autocomplete="tel" maxlength="10" placeholder="10-digit mobile number">
+                    </div>
+                </div>
+                <div class="form-field">
+                    <label class="field-label" for="_dbmDate">Preferred date</label>
+                    <input id="_dbmDate" class="field-input" type="date" required>
+                </div>
+                <div class="form-row-2">
+                    <div class="form-field">
+                        <label class="field-label" for="_dbmTime">Preferred start time</label>
+                        <select id="_dbmTime" class="field-input">
+                            <option value="08:00 AM">08:00 AM</option>
+                            <option value="09:00 AM" selected>09:00 AM</option>
+                            <option value="10:00 AM">10:00 AM</option>
+                            <option value="11:00 AM">11:00 AM</option>
+                            <option value="12:00 PM">12:00 PM</option>
+                            <option value="01:00 PM">01:00 PM</option>
+                            <option value="02:00 PM">02:00 PM</option>
+                            <option value="03:00 PM">03:00 PM</option>
+                            <option value="04:00 PM">04:00 PM</option>
+                            <option value="05:00 PM">05:00 PM</option>
+                            <option value="06:00 PM">06:00 PM</option>
+                        </select>
+                    </div>
+                    <div class="form-field">
+                        <label class="field-label" for="_dbmEndTime">Preferred end time</label>
+                        <select id="_dbmEndTime" class="field-input">
+                            <option value="09:00 AM">09:00 AM</option>
+                            <option value="10:00 AM">10:00 AM</option>
+                            <option value="11:00 AM">11:00 AM</option>
+                            <option value="12:00 PM">12:00 PM</option>
+                            <option value="01:00 PM">01:00 PM</option>
+                            <option value="02:00 PM">02:00 PM</option>
+                            <option value="03:00 PM">03:00 PM</option>
+                            <option value="04:00 PM">04:00 PM</option>
+                            <option value="05:00 PM" selected>05:00 PM</option>
+                            <option value="06:00 PM">06:00 PM</option>
+                            <option value="07:00 PM">07:00 PM</option>
+                            <option value="08:00 PM">08:00 PM</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="modal-actions">
+                    <button id="_dbmCancel" type="button" class="btn btn-outline">Cancel</button>
+                    <button id="_dbmConfirm" type="button" class="btn btn-primary">
+                        <i class="fa-solid fa-check"></i> Confirm Booking
                     </button>
                 </div>
             </div>

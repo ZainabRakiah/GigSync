@@ -401,6 +401,108 @@ await test('Phase 0.5-D — Customer Chatbot handles specialist discovery withou
     assert.ok(result.spokenResponse.toLowerCase().includes('time'), 'Must advance to the missing time fields');
 });
 
+await test('Phase 0.5-D — Customer Chatbot hides busy workers for an exact requested slot', async () => {
+    const { aiAgent } = require('../backend/ai_agent');
+    const saz = DB.registerWorkerProfile({
+        name: 'Saz Cleaner',
+        phone: '9876509991',
+        trade: 'Home Cleaning',
+        city: 'Ramanagara'
+    }).worker || DB.getWorkerByPhone('9876509991');
+    assert.ok(saz && saz.id);
+
+    DB.setWorkerAvailabilitySlot({
+        workerId: saz.id,
+        workerPhone: saz.phone,
+        trade: saz.trade,
+        dateStr: 'Tomorrow',
+        startTime: '11:00 AM',
+        endTime: '12:00 PM',
+        isAvailable: true
+    });
+
+    DB.createJob({
+        customer_phone: '9991112223',
+        customer_name: 'Existing Customer',
+        worker_id: saz.id,
+        worker_phone: saz.phone,
+        worker_name: saz.name,
+        service: 'Home Cleaning',
+        problem_description: 'Existing clean-up booking',
+        location: 'Town Area',
+        city: 'Ramanagara',
+        requested_date: 'Tomorrow',
+        requested_time: '11:00 AM',
+        requested_end_time: '12:00 PM',
+        budget: '₹350',
+        status: 'Confirmed'
+    });
+
+    const result = await aiAgent.processCallTurn({
+        sessionId: 'cust_session_test_busy_1',
+        callerPhone: '9900112233',
+        callerRole: 'customer',
+        callerName: 'Sunita',
+        city: 'Ramanagara',
+        speechText: 'I need home cleaning tomorrow from 11 AM to 12 PM'
+    });
+
+    assert.ok(result.spokenResponse, 'Must return a spoken response');
+    assert.ok(!result.spokenResponse.toLowerCase().includes('saz cleaner'), 'Busy worker must not be listed as available');
+    assert.ok(
+        result.spokenResponse.toLowerCase().includes('no verified specialists are available')
+        || result.spokenResponse.toLowerCase().includes('no verified home cleaning')
+        || result.detectedIntent === 'find_workers_empty',
+        'Must clearly say nobody is available for the requested slot'
+    );
+});
+
+await test('Phase 0.5-D — Customer Chatbot honors an explicit calendar date like 7th September', async () => {
+    const { aiAgent } = require('../backend/ai_agent');
+    const cleaner = DB.registerWorkerProfile({
+        name: 'Hari Cleaner',
+        phone: '9876509992',
+        trade: 'Home Cleaning',
+        city: 'Ramanagara'
+    }).worker || DB.getWorkerByPhone('9876509992');
+    assert.ok(cleaner && cleaner.id);
+
+    DB.setWorkerAvailabilitySlot({
+        workerId: cleaner.id,
+        workerPhone: cleaner.phone,
+        trade: cleaner.trade,
+        dateStr: '2026-09-07',
+        startTime: '11:00 AM',
+        endTime: '12:00 PM',
+        isAvailable: true
+    });
+
+    const result = await aiAgent.processCallTurn({
+        sessionId: 'cust_session_test_date_1',
+        callerPhone: '9900112233',
+        callerRole: 'customer',
+        callerName: 'Sunita',
+        city: 'Ramanagara',
+        speechText: 'I need a cleaner for 7th September from 11:00 a.m. to 12:00 p.m.'
+    });
+
+    assert.ok(result.spokenResponse, 'Must return a spoken response');
+    assert.ok(result.spokenResponse.toLowerCase().includes('7th september'), 'Must mention the explicit date');
+    assert.ok(!result.spokenResponse.toLowerCase().includes('tomorrow'), 'Must not fall back to Tomorrow');
+
+    const confirmed = await aiAgent.processCallTurn({
+        sessionId: 'cust_session_test_date_1',
+        callerPhone: '9900112233',
+        callerRole: 'customer',
+        callerName: 'Sunita',
+        city: 'Ramanagara',
+        speechText: 'yes'
+    });
+
+    assert.ok(confirmed.spokenResponse.toLowerCase().includes('7th september'), 'Confirmed booking must preserve the explicit date');
+    assert.ok(!confirmed.spokenResponse.toLowerCase().includes('tomorrow'), 'Confirmed booking must not revert to Tomorrow');
+});
+
 await test('Phase 0.5-D — Customer Chatbot creates booking and prevents conflict', async () => {
     const { aiAgent } = require('../backend/ai_agent');
     const priya = DB.getWorkerByPhone('9876501111');
@@ -457,6 +559,31 @@ await test('Phase 0.5-D — Customer Chatbot creates booking and prevents confli
         || successResult.detectedIntent === 'booking_conflict_job_conflict',
         'Must either confirm the valid booking or reject an already-occupied slot'
     );
+});
+
+await test('Phase 0.5-D — Customer Chatbot refuses a named worker already booked for the slot', async () => {
+    const { aiAgent } = require('../backend/ai_agent');
+    const saz = DB.getWorkerByPhone('9876509991');
+    assert.ok(saz && saz.id);
+
+    const result = await aiAgent.processCallTurn({
+        sessionId: 'cust_session_test_busy_2',
+        callerPhone: '9900112233',
+        callerRole: 'customer',
+        callerName: 'Sunita',
+        city: 'Ramanagara',
+        speechText: 'Book Saz Cleaner tomorrow from 11 AM to 12 PM'
+    });
+
+    assert.ok(result.spokenResponse, 'Must return a spoken response');
+    assert.ok(
+        result.spokenResponse.toLowerCase().includes('already has another booking')
+        || result.spokenResponse.toLowerCase().includes('outside')
+        || result.spokenResponse.toLowerCase().includes('not available')
+        || result.detectedIntent === 'booking_conflict_job_conflict',
+        'Must refuse the named worker when the slot is already taken'
+    );
+    assert.ok(!result.spokenResponse.toLowerCase().includes('confirmed'), 'Must not falsely confirm a clash');
 });
 
 await test('Phase 0.5-D — Worker Voice Agent answers profession, bookings, and availability', async () => {

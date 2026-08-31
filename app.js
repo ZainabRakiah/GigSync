@@ -172,6 +172,46 @@ function toast(msg) {
     toast._timer = setTimeout(() => el.classList.add('hidden'), 3000);
 }
 
+function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>'"]/g, ch => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
+    }[ch]));
+}
+
+function normalizeUiPhone(value) {
+    const digits = String(value || '').replace(/\D/g, '');
+    return digits.length > 10 ? digits.slice(-10) : digits;
+}
+
+function statusCssClass(status) {
+    return String(status || 'Requested').toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+}
+
+// All dialogs close consistently: X, Cancel, backdrop click, and Escape. This
+// also prevents the page behind a dialog from scrolling while a decision is open.
+function setModalHidden(modal, hidden = true) {
+    if (!modal) return;
+    modal.classList.toggle('hidden', hidden);
+    modal.setAttribute('aria-hidden', hidden ? 'true' : 'false');
+    document.body.classList.toggle('modal-open', Boolean(document.querySelector('.modal-backdrop:not(.hidden)')));
+}
+
+document.querySelectorAll('.modal-backdrop').forEach(modal => {
+    modal.addEventListener('click', event => {
+        if (event.target !== modal) return;
+        if (modal.id === 'aiVoiceModal' && typeof closeAiVoiceModal === 'function') closeAiVoiceModal();
+        else setModalHidden(modal, true);
+    });
+});
+
+document.addEventListener('keydown', event => {
+    if (event.key !== 'Escape') return;
+    const openModal = [...document.querySelectorAll('.modal-backdrop:not(.hidden)')].pop();
+    if (!openModal) return;
+    if (openModal.id === 'aiVoiceModal' && typeof closeAiVoiceModal === 'function') closeAiVoiceModal();
+    else setModalHidden(openModal, true);
+});
+
 /* ---------- Audio Pipeline Diagnostics & Telemetry ---------- */
 function updateDiagnostic(id, text, type = 'idle') {
     const el = document.getElementById(id);
@@ -579,16 +619,16 @@ function updateActiveCity(newCity) {
 }
 
 const locationModal = document.getElementById('locationModal');
-document.getElementById('openLocationModalBtn')?.addEventListener('click', () => locationModal?.classList.remove('hidden'));
-document.getElementById('workerLocationBtn')?.addEventListener('click', () => locationModal?.classList.remove('hidden'));
-document.getElementById('closeLocationModalBtn')?.addEventListener('click', () => locationModal?.classList.add('hidden'));
+document.getElementById('openLocationModalBtn')?.addEventListener('click', () => setModalHidden(locationModal, false));
+document.getElementById('workerLocationBtn')?.addEventListener('click', () => setModalHidden(locationModal, false));
+document.getElementById('closeLocationModalBtn')?.addEventListener('click', () => setModalHidden(locationModal, true));
 
 document.querySelectorAll('.city-tile').forEach(tile => {
     tile.addEventListener('click', () => {
         const c = tile.dataset.city;
         if (c) {
             updateActiveCity(c);
-            locationModal?.classList.add('hidden');
+            setModalHidden(locationModal, true);
             toast(`Location set to ${c}`);
         }
     });
@@ -603,12 +643,12 @@ document.getElementById('detectGpsLocationBtn')?.addEventListener('click', () =>
     navigator.geolocation.getCurrentPosition(
         () => {
             updateActiveCity('Ramanagara');
-            locationModal?.classList.add('hidden');
+            setModalHidden(locationModal, true);
             toast('📍 Location confirmed: Ramanagara cluster');
         },
         () => {
             updateActiveCity('Ramanagara');
-            locationModal?.classList.add('hidden');
+            setModalHidden(locationModal, true);
             toast('Defaulted to Ramanagara cluster');
         }
     );
@@ -1024,11 +1064,55 @@ document.getElementById('terminalLogoutBtn')?.addEventListener('click', logout);
 
 // Create Job Modal
 const createJobModal = document.getElementById('createJobModal');
+function parseClockTimeToMinutes(value) {
+    const text = String(value || '').trim().toUpperCase();
+    const match = text.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/);
+    if (!match) return null;
+    let hours = Number(match[1]);
+    const minutes = Number(match[2]);
+    const period = match[3];
+    if (period === 'PM' && hours !== 12) hours += 12;
+    if (period === 'AM' && hours === 12) hours = 0;
+    return hours * 60 + minutes;
+}
+function getNextTimeOptionValue(startValue, endSelect) {
+    if (!endSelect) return startValue;
+    const options = [...endSelect.options];
+    const currentIndex = options.findIndex(o => o.value === startValue);
+    if (currentIndex >= 0 && currentIndex + 1 < options.length) return options[currentIndex + 1].value;
+    return options[options.length - 1]?.value || startValue;
+}
+function syncEndTimeSelect(startSelect, endSelect) {
+    if (!startSelect || !endSelect) return;
+    if (startSelect._gigsyncSyncedEndSelect === endSelect) return;
+    startSelect._gigsyncSyncedEndSelect = endSelect;
+    const sync = () => {
+        if (!startSelect.value) return;
+        if (startSelect.value === 'Immediate') return;
+        const startMin = parseClockTimeToMinutes(startSelect.value);
+        const endMin = parseClockTimeToMinutes(endSelect.value);
+        if (startMin === null) return;
+        if (endMin === null || endMin <= startMin) {
+            endSelect.value = getNextTimeOptionValue(startSelect.value, endSelect);
+        }
+    };
+    startSelect.addEventListener('change', sync);
+    endSelect.addEventListener('change', sync);
+    sync();
+}
 function openCreateJobModal() {
-    createJobModal?.classList.remove('hidden');
+    const dateInput = document.getElementById('newJobDate');
+    const startTime = document.getElementById('newJobTime');
+    const endTime = document.getElementById('newJobEndTime');
+    if (dateInput && !dateInput.value) {
+        dateInput.value = localDateKey(new Date());
+        dateInput.min = dateInput.value;
+    }
+    if (startTime && endTime) syncEndTimeSelect(startTime, endTime);
+    setModalHidden(createJobModal, false);
 }
 function closeCreateJobModal() {
-    createJobModal?.classList.add('hidden');
+    setModalHidden(createJobModal, true);
 }
 
 document.getElementById('custNavPostJob')?.addEventListener('click', openCreateJobModal);
@@ -1043,6 +1127,7 @@ document.getElementById('createJobForm')?.addEventListener('submit', async (e) =
     const problem_description = document.getElementById('newJobDescription')?.value.trim();
     const requested_date = document.getElementById('newJobDate')?.value.trim();
     const requested_time = document.getElementById('newJobTime')?.value.trim();
+    const requested_end_time = document.getElementById('newJobEndTime')?.value.trim();
     const location = document.getElementById('newJobLocation')?.value.trim();
     const budget = document.getElementById('newJobBudget')?.value.trim();
 
@@ -1062,21 +1147,24 @@ document.getElementById('createJobForm')?.addEventListener('submit', async (e) =
         city: state.city,
         requested_date,
         requested_time,
+        requested_end_time: requested_time === 'Immediate' ? null : requested_end_time,
         budget
     };
 
+    const submitButton = document.getElementById('submitNewJobBtn');
+    if (submitButton) { submitButton.disabled = true; submitButton.textContent = 'Posting…'; }
     const res = await apiFetch('/api/jobs', {
         method: 'POST',
         body: JSON.stringify(payload)
     });
+    if (submitButton) { submitButton.disabled = false; submitButton.textContent = 'Post Job'; }
 
     if (res.ok) {
         toast('✅ Job request posted successfully!');
         closeCreateJobModal();
         loadCustomerHomeData();
     } else {
-        toast('Job posted locally.');
-        closeCreateJobModal();
+        toast('❌ ' + (res.data?.message || 'The job could not be posted.'));
     }
 });
 
@@ -1091,17 +1179,17 @@ async function loadCustomerHomeData() {
     }
 
     // Fetch Real Workers & User's Own Bookings
-    const custPhone = state.user?.phone ? state.user.phone.replace(/\D/g, '') : '';
+    const custPhone = normalizeUiPhone(state.user?.phone);
     const jobsUrl = custPhone ? `/api/jobs?phone=${encodeURIComponent(custPhone)}` : '/api/jobs';
     const [wRes, jRes] = await Promise.all([
-        apiFetch(`/api/workers?city=${encodeURIComponent(state.city)}`),
+        apiFetch(`/api/workers?city=${encodeURIComponent(state.city)}&available=true`),
         apiFetch(jobsUrl)
     ]);
 
     const workers = (wRes.ok && wRes.data.workers) ? wRes.data.workers : [];
     const allJobs = (jRes.ok && jRes.data.jobs) ? jRes.data.jobs : [];
     const jobs = custPhone ? allJobs.filter(j => {
-        const jp = (j.customer_phone || '').replace(/\D/g, '');
+        const jp = normalizeUiPhone(j.customer_phone);
         return jp === custPhone || (state.user && j.customer_id === state.user.id);
     }) : [];
     state.workers = workers;
@@ -1117,16 +1205,16 @@ async function loadCustomerHomeData() {
             activeListEl.innerHTML = activeBookings.slice(0, 3).map(j => `
                 <div class="booking-card">
                     <div class="booking-info">
-                        <h4 class="booking-service-title">${j.service}</h4>
+                        <h4 class="booking-service-title">${escapeHtml(j.service || 'Service request')}</h4>
                         <div class="booking-meta-row">
-                            <span><i class="fa-solid fa-clock"></i> ${j.requested_date} • ${j.requested_time}</span>
-                            <span><i class="fa-solid fa-location-dot"></i> ${j.location || state.city}</span>
-                            <span><i class="fa-solid fa-indian-rupee-sign"></i> ${j.budget || '₹300'}</span>
+                            <span><i class="fa-solid fa-clock"></i> ${escapeHtml(j.requested_date || 'Date not set')} • ${escapeHtml(j.requested_time || 'Time not set')}</span>
+                            <span><i class="fa-solid fa-location-dot"></i> ${escapeHtml(j.location || state.city)}</span>
+                            <span><i class="fa-solid fa-indian-rupee-sign"></i> ${escapeHtml(j.budget || '₹300')}</span>
                         </div>
                     </div>
                     <div class="booking-actions-col">
-                        <span class="status-pill ${j.status.toLowerCase().replace(/\s+/g, '-')}">
-                            <span class="status-indicator"></span> ${j.status}
+                        <span class="status-pill ${statusCssClass(j.status)}">
+                            <span class="status-indicator"></span> ${escapeHtml(j.status || 'Requested')}
                         </span>
                     </div>
                 </div>
@@ -1142,30 +1230,36 @@ async function loadCustomerHomeData() {
         } else {
             workersGridEl.innerHTML = workers.map(w => {
                 const initials = (w.name || 'W').split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase();
-                const safeName = (w.name || 'Specialist').replace(/'/g, "\\'");
-                const safeTrade = (w.trade || 'Service').replace(/'/g, "\\'");
-                const safeHours = (w.availability_hours || '09:00 AM – 05:00 PM').replace(/'/g, "\\'");
                 return `
                     <div class="worker-card">
                         <div class="worker-card-head">
-                            <div class="avatar-circle worker-avatar">${initials}</div>
+                            <div class="avatar-circle worker-avatar">${escapeHtml(initials)}</div>
                             <div>
-                                <h4 class="worker-card-name">${w.name}</h4>
-                                <span class="worker-card-trade">${w.trade}</span>
+                                <h4 class="worker-card-name">${escapeHtml(w.name || 'Specialist')}</h4>
+                                <span class="worker-card-trade">${escapeHtml(w.trade || 'Service')}</span>
                             </div>
                         </div>
                         <div class="worker-card-meta">
-                            <span><i class="fa-solid fa-star" style="color:#F59E0B"></i> ${w.rating || '4.9'}</span>
-                            <span><i class="fa-solid fa-location-dot"></i> ${w.city}</span>
-                            <span><i class="fa-solid fa-clock"></i> ${w.availability_hours || 'Available'}</span>
-                            <span><strong>₹${w.price || 300}</strong></span>
+                            <span><i class="fa-solid fa-star" style="color:#F59E0B"></i> ${escapeHtml(w.rating || '4.9')}</span>
+                            <span><i class="fa-solid fa-location-dot"></i> ${escapeHtml(w.city || state.city)}</span>
+                            <span><i class="fa-solid fa-clock"></i> ${escapeHtml(w.availability_hours || 'Available')}</span>
+                            <span><strong>₹${escapeHtml(w.price || 300)}</strong></span>
                         </div>
-                        <button type="button" class="btn btn-outline btn-sm btn-block" onclick="window._bookWorkerDirect(${w.id || 'null'}, '${safeName}', '${w.phone || ''}', '${safeTrade}', ${w.price || 300}, '${safeHours}')">
+                        <button type="button" class="btn btn-outline btn-sm btn-block worker-book-btn"
+                            data-worker-id="${escapeHtml(w.id)}"
+                            data-worker-name="${escapeHtml(w.name || 'Specialist')}">
                             Book Specialist
                         </button>
                     </div>
                 `;
             }).join('');
+            workersGridEl.querySelectorAll('.worker-book-btn').forEach(button => {
+                const worker = workers.find(w => String(w.id) === String(button.dataset.workerId));
+                if (!worker) return;
+                button.addEventListener('click', () => window._bookWorkerDirect(
+                        worker.id, worker.name, worker.phone, worker.trade, worker.price, worker.availability_hours
+                ));
+            });
         }
     }
 }
@@ -1184,130 +1278,137 @@ async function loadCustomerHomeData() {
 // The modal pre-fills sensible defaults but lets the customer correct them,
 // then sends a proper ISO date and single time the conflict checker can compare.
 // -------------------------------------------------------------------------
-window._bookWorkerDirect = async function(workerId, workerName, workerPhone, workerTrade, price, availHours) {
-    let custPhone = state.user?.phone || '';
-    let custName  = state.user?.name  || '';
+let directBookingContext = null;
+const directBookModal = document.getElementById('directBookModal');
 
-    if (!custPhone) {
-        custPhone = prompt('Please enter your 10-digit mobile number to book:');
-        if (!custPhone || !/^[6-9]\d{9}$/.test(custPhone.trim().replace(/\D/g, ''))) {
-            toast('A valid 10-digit mobile number is required.');
-            return;
-        }
-        custPhone = custPhone.trim().replace(/\D/g, '');
-        custName  = prompt('Please enter your name:') || 'Customer';
-        if (state.user) { state.user.phone = custPhone; state.user.name = custName; }
+function closeDirectBookModal() {
+    setModalHidden(directBookModal, true);
+    directBookingContext = null;
+}
+
+function localDateKey(date) {
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+function getDirectBookingDefaultDate(availHours) {
+    const today = new Date();
+    const todayKey = localDateKey(today);
+    const availabilityDate = String(availHours || '').match(/\b\d{4}-\d{2}-\d{2}\b/)?.[0];
+    if (availabilityDate && availabilityDate >= todayKey) return availabilityDate;
+    today.setDate(today.getDate() + 1);
+    return localDateKey(today);
+}
+
+function getDirectBookingDefaultTime(availHours) {
+    const candidate = String(availHours || '').match(/\b\d{1,2}:\d{2}\s*(?:AM|PM)\b/i)?.[0];
+    if (!candidate) return '09:00 AM';
+    const normalized = candidate.replace(/\s+/g, ' ').toUpperCase();
+    const option = [...(document.getElementById('_dbmTime')?.options || [])].find(o => o.value === normalized);
+    return option ? option.value : '09:00 AM';
+}
+
+function getDirectBookingDefaultEndTime(availHours, startTime) {
+    const matches = String(availHours || '').match(/\b\d{1,2}:\d{2}\s*(?:AM|PM)\b/gi) || [];
+    const candidate = matches[1] || matches[0] || null;
+    const endSelect = document.getElementById('_dbmEndTime');
+    if (candidate) {
+        const normalized = candidate.replace(/\s+/g, ' ').toUpperCase();
+        const option = [...(endSelect?.options || [])].find(o => o.value === normalized);
+        if (option) return option.value;
+    }
+    if (startTime && endSelect) return getNextTimeOptionValue(startTime, endSelect);
+    return endSelect?.value || '05:00 PM';
+}
+
+window._bookWorkerDirect = function(workerId, workerName, workerPhone, workerTrade, price, availHours) {
+    if (!workerId) {
+        toast('This specialist is not available for booking right now.');
+        return;
     }
 
-    // --- Build or reuse the booking confirmation modal ---
-    let modal = document.getElementById('_directBookModal');
-    if (!modal) {
-        modal = document.createElement('div');
-        modal.id = '_directBookModal';
-        modal.style.cssText = `
-            position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;
-            background:rgba(0,0,0,0.55);backdrop-filter:blur(4px);`;
-        modal.innerHTML = `
-            <div style="background:var(--card-bg,#1e1e2e);border:1px solid var(--border,#333);border-radius:16px;
-                        padding:28px 32px;width:min(420px,92vw);box-shadow:0 24px 64px rgba(0,0,0,.6);">
-                <h3 id="_dbmTitle" style="margin:0 0 4px;font-size:1.15rem;color:var(--text,#fff)"></h3>
-                <p  id="_dbmSub"   style="margin:0 0 20px;font-size:.85rem;color:var(--text-muted,#aaa)"></p>
-                <label style="display:block;margin-bottom:12px;font-size:.85rem;color:var(--text-muted,#aaa)">
-                    Date
-                    <input id="_dbmDate" type="date" style="display:block;width:100%;margin-top:4px;padding:8px 12px;
-                           border-radius:8px;border:1px solid var(--border,#444);background:var(--input-bg,#111);
-                           color:var(--text,#fff);font-size:.95rem;box-sizing:border-box;">
-                </label>
-                <label style="display:block;margin-bottom:20px;font-size:.85rem;color:var(--text-muted,#aaa)">
-                    Time
-                    <select id="_dbmTime" style="display:block;width:100%;margin-top:4px;padding:8px 12px;
-                            border-radius:8px;border:1px solid var(--border,#444);background:var(--input-bg,#111);
-                            color:var(--text,#fff);font-size:.95rem;box-sizing:border-box;">
-                        ${['06:00 AM','07:00 AM','08:00 AM','09:00 AM','10:00 AM','11:00 AM',
-                           '12:00 PM','01:00 PM','02:00 PM','03:00 PM','04:00 PM','05:00 PM',
-                           '06:00 PM','07:00 PM','08:00 PM']
-                            .map(t => `<option value="${t}">${t}</option>`).join('')}
-                    </select>
-                </label>
-                <div style="display:flex;gap:10px;">
-                    <button id="_dbmCancel" type="button"
-                        style="flex:1;padding:10px;border-radius:8px;border:1px solid var(--border,#444);
-                               background:transparent;color:var(--text-muted,#aaa);cursor:pointer;font-size:.9rem;">
-                        Cancel
-                    </button>
-                    <button id="_dbmConfirm" type="button"
-                        style="flex:2;padding:10px;border-radius:8px;border:none;
-                               background:var(--accent,#6366f1);color:#fff;cursor:pointer;
-                               font-size:.9rem;font-weight:600;">
-                        Confirm Booking
-                    </button>
-                </div>
-            </div>`;
-        document.body.appendChild(modal);
-        document.getElementById('_dbmCancel').addEventListener('click', () => {
-            modal.style.display = 'none';
-        });
+    directBookingContext = { workerId, workerName, workerPhone, workerTrade, price, availHours };
+    const signedInPhone = normalizeUiPhone(state.user?.phone);
+    const guestFields = document.getElementById('guestBookingFields');
+    const nameInput = document.getElementById('_dbmCustomerName');
+    const phoneInput = document.getElementById('_dbmCustomerPhone');
+    const dateInput = document.getElementById('_dbmDate');
+    const timeInput = document.getElementById('_dbmTime');
+    const endInput = document.getElementById('_dbmEndTime');
+    const todayKey = localDateKey(new Date());
+
+    document.getElementById('_dbmTitle').textContent = `Book ${workerName || 'this specialist'}`;
+    document.getElementById('_dbmSub').textContent = `${workerTrade || 'Service'} · ₹${price || 300} · ${availHours || 'Availability will be checked before confirmation'}`;
+    dateInput.value = getDirectBookingDefaultDate(availHours);
+    dateInput.min = todayKey;
+    timeInput.value = getDirectBookingDefaultTime(availHours);
+    if (endInput) endInput.value = getDirectBookingDefaultEndTime(availHours, timeInput.value);
+    syncEndTimeSelect(timeInput, endInput);
+
+    const isGuest = !signedInPhone;
+    guestFields?.classList.toggle('hidden', !isGuest);
+    if (isGuest) {
+        nameInput.value = '';
+        phoneInput.value = '';
     }
-
-    // Pre-fill defaults
-    const tomorrow = new Date();
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    const defaultDate = tomorrow.toISOString().split('T')[0];   // YYYY-MM-DD
-
-    document.getElementById('_dbmTitle').textContent = `Book ${workerName}`;
-    document.getElementById('_dbmSub').textContent   =
-        `${workerTrade} · ₹${price || 300} · Available: ${availHours || 'See profile'}`;
-    document.getElementById('_dbmDate').value = defaultDate;
-    document.getElementById('_dbmDate').min   = defaultDate;    // can't book in the past
-    document.getElementById('_dbmTime').value = '09:00 AM';     // sensible default
-
-    modal.style.display = 'flex';
-
-    // Wire up confirm button (replace previous listener by cloning)
-    const oldBtn = document.getElementById('_dbmConfirm');
-    const newBtn = oldBtn.cloneNode(true);
-    oldBtn.parentNode.replaceChild(newBtn, oldBtn);
-
-    newBtn.addEventListener('click', async () => {
-        const chosenDate = document.getElementById('_dbmDate').value;   // 'YYYY-MM-DD'
-        const chosenTime = document.getElementById('_dbmTime').value;   // 'HH:MM AM'
-
-        if (!chosenDate) {
-            toast('Please select a date.');
-            return;
-        }
-
-        modal.style.display = 'none';
-        toast(`Booking ${workerName}...`);
-
-        const payload = {
-            customer_phone:      custPhone,
-            customer_name:       custName || 'Customer',
-            worker_id:           workerId  || null,
-            worker_name:         workerName,
-            worker_phone:        workerPhone || null,
-            service:             workerTrade,
-            problem_description: `Direct booking for ${workerName} (${workerTrade})`,
-            location:            state.user?.area || 'Town Area',
-            city:                state.city || 'Ramanagara',
-            requested_date:      chosenDate,   // ISO YYYY-MM-DD — matches what workers store
-            requested_time:      chosenTime,   // single 'HH:MM AM' — parseTimeToMinutes can handle
-            budget:              `₹${price || 300}`,
-            status:              'Confirmed',
-            payment_method:      'Cash'
-        };
-
-        const res = await apiFetch('/api/jobs', { method: 'POST', body: JSON.stringify(payload) });
-
-        if (res.ok) {
-            toast(`✅ Booking confirmed for ${workerName}!`);
-            loadCustomerHomeData();
-            if (state.customerView === 'bookings') loadCustomerBookings();
-        } else {
-            toast('❌ ' + (res.data?.message || 'Failed to create booking.'));
-        }
-    });
+    setModalHidden(directBookModal, false);
+    (isGuest ? nameInput : dateInput)?.focus();
 };
+
+document.getElementById('closeDirectBookModalBtn')?.addEventListener('click', closeDirectBookModal);
+document.getElementById('_dbmCancel')?.addEventListener('click', closeDirectBookModal);
+document.getElementById('_dbmConfirm')?.addEventListener('click', async () => {
+    const context = directBookingContext;
+    if (!context) return;
+
+    const customerPhone = normalizeUiPhone(state.user?.phone || document.getElementById('_dbmCustomerPhone')?.value);
+    const customerName = (state.user?.name || document.getElementById('_dbmCustomerName')?.value || 'Customer').trim();
+    const chosenDate = document.getElementById('_dbmDate')?.value;
+    const chosenTime = document.getElementById('_dbmTime')?.value;
+    const chosenEndTime = document.getElementById('_dbmEndTime')?.value;
+    if (!/^[6-9]\d{9}$/.test(customerPhone)) {
+        toast('Please enter a valid 10-digit mobile number.');
+        document.getElementById('_dbmCustomerPhone')?.focus();
+        return;
+    }
+    if (!customerName || !chosenDate || !chosenTime || !chosenEndTime) {
+        toast('Please complete your name, date, and time range.');
+        return;
+    }
+    if (chosenTime !== 'Immediate' && parseClockTimeToMinutes(chosenEndTime) <= parseClockTimeToMinutes(chosenTime)) {
+        toast('Please choose an end time after the start time.');
+        return;
+    }
+
+    const button = document.getElementById('_dbmConfirm');
+    if (button) { button.disabled = true; button.textContent = 'Checking availability…'; }
+    const payload = {
+        customer_phone: customerPhone,
+        customer_name: customerName,
+        worker_id: context.workerId,
+        worker_phone: context.workerPhone || null,
+        service: context.workerTrade,
+        problem_description: `Direct booking for ${context.workerName} (${context.workerTrade})`,
+        location: state.user?.area || 'Town Area',
+        city: state.city || 'Ramanagara',
+        requested_date: chosenDate,
+        requested_time: chosenTime,
+        requested_end_time: chosenTime === 'Immediate' ? null : chosenEndTime,
+        budget: `₹${context.price || 300}`,
+        status: 'Confirmed',
+        payment_method: 'Cash'
+    };
+
+    const res = await apiFetch('/api/jobs', { method: 'POST', body: JSON.stringify(payload) });
+    if (button) { button.disabled = false; button.innerHTML = '<i class="fa-solid fa-check"></i> Confirm Booking'; }
+    if (!res.ok) {
+        toast('❌ ' + (res.data?.message || 'Failed to create booking.'));
+        return;
+    }
+    closeDirectBookModal();
+    toast(`✅ Booking confirmed for ${context.workerName}!`);
+    loadCustomerHomeData();
+    if (state.customerView === 'bookings') loadCustomerBookings();
+});
 
 
 
@@ -1428,41 +1529,44 @@ function openCustomerProfileModal() {
         const areaInput = document.getElementById('custProfileArea');
         if (areaInput) areaInput.value = state.user.area || state.user.profile?.area || '';
     }
-    customerProfileModal?.classList.remove('hidden');
+    setModalHidden(customerProfileModal, false);
 }
 
-document.getElementById('closeCustomerProfileModalBtn')?.addEventListener('click', () => customerProfileModal?.classList.add('hidden'));
+document.getElementById('closeCustomerProfileModalBtn')?.addEventListener('click', () => setModalHidden(customerProfileModal, true));
 
 document.getElementById('customerProfileForm')?.addEventListener('submit', async (e) => {
     e.preventDefault();
     const name = document.getElementById('custProfileName')?.value.trim();
     const city = document.getElementById('custProfileCity')?.value;
     const area = document.getElementById('custProfileArea')?.value.trim() || 'Town';
-
-    // Update local state immediately
-    if (state.user) {
-        state.user.name = name || state.user.name;
-        state.user.city = city || state.user.city;
-        state.user.area = area;
+    if (!name) {
+        toast('Please enter your name.');
+        return;
     }
-
-    // Update city display
-    if (city) updateActiveCity(city);
-
-    // Update display elements
-    document.getElementById('userInitials') && (document.getElementById('userInitials').textContent = (name || '').split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase() || 'KR');
-    document.getElementById('userDisplayName') && (document.getElementById('userDisplayName').textContent = name || '');
-    document.getElementById('dropdownUserName') && (document.getElementById('dropdownUserName').textContent = name || '');
 
     // Save to backend if authenticated
     if (state.token) {
-        await apiFetch('/api/customers/me/profile', {
+        const saveRes = await apiFetch('/api/customers/me/profile', {
             method: 'PATCH',
             body: JSON.stringify({ name, city, area })
-        }).catch(() => {});
+        });
+        if (!saveRes.ok) {
+            toast('❌ ' + (saveRes.data?.message || 'Profile could not be saved.'));
+            return;
+        }
     }
 
-    customerProfileModal?.classList.add('hidden');
+    if (state.user) {
+        state.user.name = name;
+        state.user.city = city || state.user.city;
+        state.user.area = area;
+    }
+    if (city) updateActiveCity(city);
+    document.getElementById('userInitials') && (document.getElementById('userInitials').textContent = name.split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase() || 'KR');
+    document.getElementById('userDisplayName') && (document.getElementById('userDisplayName').textContent = name);
+    document.getElementById('dropdownUserName') && (document.getElementById('dropdownUserName').textContent = name);
+
+    setModalHidden(customerProfileModal, true);
     toast(`✅ Profile updated: ${name}`);
 });
 
@@ -1470,7 +1574,7 @@ document.getElementById('customerProfileForm')?.addEventListener('submit', async
 
 // Load Customer My Bookings View
 async function loadCustomerBookings(filter = 'all') {
-    const custPhone = state.user?.phone ? state.user.phone.replace(/\D/g, '') : '';
+    const custPhone = normalizeUiPhone(state.user?.phone);
     if (!custPhone) {
         const listEl = document.getElementById('custFullBookingsList');
         if (listEl) listEl.innerHTML = `<div class="empty-placeholder"><p>No bookings yet.</p></div>`;
@@ -1479,9 +1583,8 @@ async function loadCustomerBookings(filter = 'all') {
 
     const res = await apiFetch(`/api/jobs?phone=${encodeURIComponent(custPhone)}`);
     const allJobs = (res.ok && res.data.jobs) ? res.data.jobs : [];
-    const availableOpportunities = (res.ok && Array.isArray(res.data.opportunities)) ? res.data.opportunities : [];
     const jobs = allJobs.filter(j => {
-        const jp = (j.customer_phone || '').replace(/\D/g, '');
+        const jp = normalizeUiPhone(j.customer_phone);
         return jp === custPhone || (state.user && j.customer_id === state.user.id);
     });
     state.jobs = jobs;
@@ -1508,19 +1611,19 @@ async function loadCustomerBookings(filter = 'all') {
     listEl.innerHTML = filtered.map(j => `
         <div class="booking-card">
             <div class="booking-info">
-                <h4 class="booking-service-title">${j.service}</h4>
-                <p style="font-size:13px;color:var(--gs-text-secondary);margin:2px 0 6px 0">${j.problem_description || 'Service request'}</p>
+                <h4 class="booking-service-title">${escapeHtml(j.service || 'Service request')}</h4>
+                <p style="font-size:13px;color:var(--gs-text-secondary);margin:2px 0 6px 0">${escapeHtml(j.problem_description || 'Service request')}</p>
                 <div class="booking-meta-row">
-                    <span><i class="fa-solid fa-clock"></i> ${j.requested_date} • ${j.requested_time}</span>
-                    <span><i class="fa-solid fa-location-dot"></i> ${j.location || state.city}</span>
-                    <span><i class="fa-solid fa-indian-rupee-sign"></i> ${j.budget || '₹300'}</span>
+                    <span><i class="fa-solid fa-clock"></i> ${escapeHtml(j.requested_date || 'Date not set')} • ${escapeHtml(j.requested_time || 'Time not set')}</span>
+                    <span><i class="fa-solid fa-location-dot"></i> ${escapeHtml(j.location || state.city)}</span>
+                    <span><i class="fa-solid fa-indian-rupee-sign"></i> ${escapeHtml(j.budget || '₹300')}</span>
                 </div>
             </div>
             <div class="booking-actions-col">
-                <span class="status-pill ${j.status.toLowerCase().replace(/\s+/g, '-')}">
-                    <span class="status-indicator"></span> ${j.status}
+                <span class="status-pill ${statusCssClass(j.status)}">
+                    <span class="status-indicator"></span> ${escapeHtml(j.status || 'Requested')}
                 </span>
-                ${j.status !== 'Completed' && j.status !== 'Cancelled' ? `<button type="button" class="btn btn-outline btn-sm" onclick="window._cancelJob('${j.id}')">Cancel</button>` : ''}
+                ${j.status !== 'Completed' && j.status !== 'Cancelled' ? `<button type="button" class="btn btn-outline btn-sm" onclick="window._cancelJob('${escapeHtml(j.id)}')">Cancel</button>` : ''}
             </div>
         </div>
     `).join('');
@@ -1574,20 +1677,28 @@ document.getElementById('workerDutyToggleBtn')?.addEventListener('click', async 
 
 const workerAvailModal = document.getElementById('workerAvailModal');
 document.getElementById('openEditAvailModalBtn')?.addEventListener('click', () => {
-    const today = new Date().toISOString().split('T')[0];
+    const today = localDateKey(new Date());
+    _availPattern = 'once';
+    document.querySelectorAll('#availPatternTabs .avail-tab').forEach(tab => tab.classList.toggle('active', tab.dataset.pattern === 'once'));
+    _selectedDow.clear();
+    document.querySelectorAll('#availDowChips .dow-chip').forEach(chip => chip.classList.remove('active'));
+    document.getElementById('availDowRow')?.classList.add('hidden');
+    document.getElementById('availEndDateField')?.classList.add('hidden');
+    const startLabel = document.getElementById('availStartDateLabel');
+    if (startLabel) startLabel.textContent = 'Date';
     const rs = document.getElementById('availRangeStart');
     if (rs) { if (!rs.value) rs.value = today; rs.min = today; }
     const re = document.getElementById('availRangeEnd');
     if (re) re.min = today;
 
-    workerAvailModal?.classList.remove('hidden');
+    setModalHidden(workerAvailModal, false);
     _refreshAvailSlotsList();
 });
-document.getElementById('closeAvailModalBtn')?.addEventListener('click', () => workerAvailModal?.classList.add('hidden'));
+document.getElementById('closeAvailModalBtn')?.addEventListener('click', () => setModalHidden(workerAvailModal, true));
 
 // Set today as minimum date for the start date picker
 (function() {
-    const today = new Date().toISOString().split('T')[0];
+    const today = localDateKey(new Date());
     const rs = document.getElementById('availRangeStart');
     if (rs) { rs.value = today; rs.min = today; }
     const re = document.getElementById('availRangeEnd');
@@ -1683,6 +1794,24 @@ document.getElementById('workerAvailForm')?.addEventListener('submit', async (e)
         return;
     }
 
+    const toMinutes = value => {
+        const match = String(value).match(/(\d{1,2}):?(\d{2})?\s*(AM|PM)/i);
+        if (!match) return -1;
+        let hour = Number(match[1]);
+        const minute = Number(match[2] || 0);
+        if (match[3].toUpperCase() === 'PM' && hour < 12) hour += 12;
+        if (match[3].toUpperCase() === 'AM' && hour === 12) hour = 0;
+        return hour * 60 + minute;
+    };
+    if (toMinutes(startTime) >= toMinutes(endTime)) {
+        toast('End time must be after start time.');
+        return;
+    }
+    if (rangeEnd && rangeEnd < rangeStart) {
+        toast('The end date must be on or after the start date.');
+        return;
+    }
+
     if (_availPattern === 'weekly' && _selectedDow.size === 0) {
         toast('Please select at least one day of the week.');
         return;
@@ -1720,11 +1849,17 @@ document.getElementById('workerAvailForm')?.addEventListener('submit', async (e)
 
     toast('✅ Availability saved!');
     _refreshAvailSlotsList();
-    workerAvailModal?.classList.add('hidden');
+    setModalHidden(workerAvailModal, true);
+
+    const savedIsActive = saveRes.data?.isAvailable ?? saveRes.data?.isAvailableNow ?? true;
+    workerIsActive = savedIsActive;
+    document.getElementById('workerDutyToggleBtn')?.classList.toggle('on', workerIsActive);
+    const dutyLabel = document.getElementById('dutyStatusLabel');
+    if (dutyLabel) dutyLabel.textContent = workerIsActive ? 'ACTIVE' : 'INACTIVE';
 
     // Update badge
     const badge = document.getElementById('workerAvailBadge');
-    if (badge) { badge.textContent = `🟢 Available (${startTime} – ${endTime})`; badge.className = 'avail-badge available'; }
+    if (badge) { badge.textContent = workerIsActive ? `🟢 Available (${startTime} – ${endTime})` : '⚪ Off Duty'; badge.className = `avail-badge ${workerIsActive ? 'available' : 'unavailable'}`; }
     const label = document.getElementById('workerTodayHoursLabel');
     if (label) label.textContent = `${startTime} – ${endTime}`;
 
@@ -1785,18 +1920,29 @@ function _showConflictModal(conflicts) {
         });
     });
 
-    modal.classList.remove('hidden');
+    setModalHidden(modal, false);
 }
+
+document.getElementById('closeConflictModalBtn')?.addEventListener('click', () => {
+    setModalHidden(document.getElementById('workerConflictModal'), true);
+});
 
 document.getElementById('conflictDoneBtn')?.addEventListener('click', async () => {
     const modal = document.getElementById('workerConflictModal');
     const decisions = [..._conflictDecisions.entries()].map(([jobId, canWork]) => ({ jobId, canWork }));
+    const doneBtn = document.getElementById('conflictDoneBtn');
+    if (doneBtn) { doneBtn.disabled = true; doneBtn.textContent = 'Saving…'; }
 
     const res = await apiFetch('/api/workers/me/availability/resolve', {
         method: 'POST', body: JSON.stringify({ decisions })
     });
 
-    modal?.classList.add('hidden');
+    if (doneBtn) { doneBtn.disabled = false; doneBtn.innerHTML = '<i class="fa-solid fa-check"></i> Confirm Decisions'; }
+    if (!res.ok) {
+        toast('❌ ' + (res.data?.message || 'Could not save those decisions.'));
+        return;
+    }
+    setModalHidden(modal, true);
 
     const cancelled = decisions.filter(d => !d.canWork).length;
     if (cancelled > 0) {
@@ -1815,26 +1961,36 @@ let _calSelectedDate = null;
 let _calSelectedWorker = null;
 let _calCustomerPhone = '';
 let _calCustomerName  = '';
+let _calRequestId = 0;
+let _calWorkerFetchId = 0;
 
 function _openCalendarModal() {
     const modal = document.getElementById('customerCalendarModal');
     if (!modal) return;
+    _calRequestId++;
     const now = new Date();
     _calYear  = now.getFullYear();
     _calMonth = now.getMonth();
     _calSelectedDate   = null;
     _calSelectedWorker = null;
+    const calStart = document.getElementById('calTimeSelect');
+    const calEnd = document.getElementById('calEndTimeSelect');
+    if (calStart) calStart.value = '10:00 AM';
+    if (calEnd) calEnd.value = '05:00 PM';
+    syncEndTimeSelect(calStart, calEnd);
     _renderCalendar();
     // Hide worker panel + time row initially
     document.getElementById('calWorkersPanel')?.classList.add('hidden');
+    document.getElementById('calSlotRow')?.classList.add('hidden');
     document.getElementById('calTimeRow')?.classList.add('hidden');
     document.getElementById('calSelectedDateLabel')?.classList.add('hidden');
-    modal.classList.remove('hidden');
+    setModalHidden(modal, false);
 }
 
 document.getElementById('openCalendarBookingBtn')?.addEventListener('click', _openCalendarModal);
 document.getElementById('closeCalendarModalBtn')?.addEventListener('click', () => {
-    document.getElementById('customerCalendarModal')?.classList.add('hidden');
+    _calRequestId++;
+    setModalHidden(document.getElementById('customerCalendarModal'), true);
 });
 document.getElementById('calPrevMonthBtn')?.addEventListener('click', () => {
     _calMonth--;
@@ -1846,6 +2002,70 @@ document.getElementById('calNextMonthBtn')?.addEventListener('click', () => {
     if (_calMonth > 11) { _calMonth = 0; _calYear++; }
     _renderCalendar();
 });
+
+function _calSelectedTimeRange() {
+    const start = document.getElementById('calTimeSelect')?.value || '10:00 AM';
+    const end = document.getElementById('calEndTimeSelect')?.value || getNextTimeOptionValue(start, document.getElementById('calEndTimeSelect'));
+    return { start, end };
+}
+
+async function _refreshCalendarWorkers(dateStr = _calSelectedDate) {
+    if (!dateStr) return;
+    const requestId = ++_calWorkerFetchId;
+    const panel    = document.getElementById('calWorkersPanel');
+    const listEl   = document.getElementById('calWorkersList');
+    const { start, end } = _calSelectedTimeRange();
+    if (listEl) listEl.innerHTML = '<div style="text-align:center;padding:16px;color:var(--gs-muted)"><i class="fa-solid fa-spinner fa-spin"></i> Finding specialists…</div>';
+    panel?.classList.remove('hidden');
+
+    const city = state.city || 'Ramanagara';
+    const res = await apiFetch(`/api/workers/available?date=${encodeURIComponent(dateStr)}&city=${encodeURIComponent(city)}&requested_time=${encodeURIComponent(start)}&requested_end_time=${encodeURIComponent(end)}`);
+    if (requestId !== _calWorkerFetchId || _calSelectedDate !== dateStr) return;
+    const workers = res.ok ? (res.data?.workers || []) : [];
+
+    if (workers.length === 0) {
+        if (listEl) {
+            listEl.innerHTML = '<p style="color:var(--gs-muted);text-align:center;padding:12px;font-size:13px">No specialists are available for this time. They are already booked or outside working hours.</p>';
+        }
+        _calSelectedWorker = null;
+        return;
+    }
+
+    if (listEl) {
+        listEl.innerHTML = workers.map(w => `
+            <div class="cal-worker-card" data-worker-id="${escapeHtml(w.id)}" data-worker-phone="${escapeHtml(w.phone || '')}" data-worker-name="${escapeHtml(w.name || 'Specialist')}" data-worker-trade="${escapeHtml(w.trade || 'Service')}" data-worker-price="${escapeHtml(w.price || 300)}" data-avail-hours="${escapeHtml(w.availability_hours || '')}">
+                <div class="cal-worker-info">
+                    <div class="cal-worker-avatar">${escapeHtml(w.name ? w.name.split(' ').map(n=>n[0]).join('').substring(0,2).toUpperCase() : '??')}</div>
+                    <div>
+                        <strong>${escapeHtml(w.name || 'Specialist')}</strong>
+                        <span>${escapeHtml(w.trade || 'Service')} · ₹${escapeHtml(w.price || 300)}</span>
+                        <span style="font-size:11px;color:var(--gs-muted)">${escapeHtml(w.availability_hours || '')}</span>
+                    </div>
+                </div>
+                <div class="cal-worker-rating">
+                    <i class="fa-solid fa-star" style="color:#f59e0b;font-size:12px"></i> ${escapeHtml(w.rating || '5.0')}
+                    ${w.is_verified ? '<span class="verified-badge-sm">✓</span>' : ''}
+                </div>
+            </div>
+        `).join('');
+
+        listEl.querySelectorAll('.cal-worker-card').forEach(card => {
+            card.addEventListener('click', () => {
+                listEl.querySelectorAll('.cal-worker-card').forEach(c => c.classList.remove('selected'));
+                card.classList.add('selected');
+                _calSelectedWorker = {
+                    id:    card.dataset.workerId,
+                    phone: card.dataset.workerPhone,
+                    name:  card.dataset.workerName,
+                    trade: card.dataset.workerTrade,
+                    price: card.dataset.workerPrice,
+                    availHours: card.dataset.availHours
+                };
+                document.getElementById('calTimeRow')?.classList.remove('hidden');
+            });
+        });
+    }
+}
 
 function _renderCalendar() {
     const grid  = document.getElementById('miniCalGrid');
@@ -1892,65 +2112,23 @@ function _renderCalendar() {
 }
 
 async function _calSelectDate(dateStr) {
+    const requestId = ++_calRequestId;
     _calSelectedDate   = dateStr;
     _calSelectedWorker = null;
     _renderCalendar(); // re-render so selected cell highlights
 
     // Show loading state
-    const panel    = document.getElementById('calWorkersPanel');
-    const listEl   = document.getElementById('calWorkersList');
     const dateLabel = document.getElementById('calSelectedDateLabel');
     const dateText  = document.getElementById('calDateText');
+    const slotRow   = document.getElementById('calSlotRow');
     const timeRow   = document.getElementById('calTimeRow');
 
     if (dateText) dateText.textContent = new Date(dateStr + 'T00:00:00').toDateString();
     dateLabel?.classList.remove('hidden');
-    panel?.classList.remove('hidden');
-    timeRow?.classList.add('hidden');
-    if (listEl) listEl.innerHTML = '<div style="text-align:center;padding:16px;color:var(--gs-muted)"><i class="fa-solid fa-spinner fa-spin"></i> Finding specialists…</div>';
-
-    const city = state.city || 'Ramanagara';
-    const res = await apiFetch(`/api/workers/available?date=${dateStr}&city=${encodeURIComponent(city)}`);
-    const workers = res.ok ? (res.data?.workers || []) : [];
-
-    if (workers.length === 0) {
-        listEl.innerHTML = '<p style="color:var(--gs-muted);text-align:center;padding:12px;font-size:13px">No specialists available on this date. Try another date.</p>';
-        return;
-    }
-
-    listEl.innerHTML = workers.map(w => `
-        <div class="cal-worker-card" data-worker-id="${w.id}" data-worker-phone="${w.phone || ''}" data-worker-name="${w.name}" data-worker-trade="${w.trade}" data-worker-price="${w.price || 300}" data-avail-hours="${w.availability_hours || ''}">
-            <div class="cal-worker-info">
-                <div class="cal-worker-avatar">${w.name ? w.name.split(' ').map(n=>n[0]).join('').substring(0,2).toUpperCase() : '??'}</div>
-                <div>
-                    <strong>${w.name}</strong>
-                    <span>${w.trade} · ₹${w.price || 300}</span>
-                    <span style="font-size:11px;color:var(--gs-muted)">${w.availability_hours || ''}</span>
-                </div>
-            </div>
-            <div class="cal-worker-rating">
-                <i class="fa-solid fa-star" style="color:#f59e0b;font-size:12px"></i> ${w.rating || '5.0'}
-                ${w.is_verified ? '<span class="verified-badge-sm">✓</span>' : ''}
-            </div>
-        </div>
-    `).join('');
-
-    // Wire worker selection
-    listEl.querySelectorAll('.cal-worker-card').forEach(card => {
-        card.addEventListener('click', () => {
-            listEl.querySelectorAll('.cal-worker-card').forEach(c => c.classList.remove('selected'));
-            card.classList.add('selected');
-            _calSelectedWorker = {
-                id:    card.dataset.workerId,
-                phone: card.dataset.workerPhone,
-                name:  card.dataset.workerName,
-                trade: card.dataset.workerTrade,
-                price: card.dataset.workerPrice,
-                availHours: card.dataset.availHours
-            };
-            timeRow?.classList.remove('hidden');
-        });
-    });
+    slotRow?.classList.remove('hidden');
+    timeRow?.classList.remove('hidden');
+    await _refreshCalendarWorkers(dateStr);
+    if (requestId !== _calRequestId || _calSelectedDate !== dateStr) return;
 }
 
 // Confirm calendar booking
@@ -1973,6 +2151,11 @@ document.getElementById('calConfirmBookingBtn')?.addEventListener('click', async
     }
 
     const time = document.getElementById('calTimeSelect')?.value || '10:00 AM';
+    const endTime = document.getElementById('calEndTimeSelect')?.value || '05:00 PM';
+    if (parseClockTimeToMinutes(endTime) <= parseClockTimeToMinutes(time)) {
+        toast('Please choose an end time after the start time.');
+        return;
+    }
 
     const payload = {
         customer_phone:      _calCustomerPhone,
@@ -1986,22 +2169,40 @@ document.getElementById('calConfirmBookingBtn')?.addEventListener('click', async
         city:                state.city || 'Ramanagara',
         requested_date:      _calSelectedDate,
         requested_time:      time,
+        requested_end_time:  endTime,
         budget:              `₹${_calSelectedWorker.price || 300}`,
         status:              'Confirmed',
         payment_method:      'Cash'
     };
 
+    const confirmButton = document.getElementById('calConfirmBookingBtn');
+    if (confirmButton) { confirmButton.disabled = true; confirmButton.textContent = 'Checking availability…'; }
     const res = await apiFetch('/api/jobs', { method: 'POST', body: JSON.stringify(payload) });
-    document.getElementById('customerCalendarModal')?.classList.add('hidden');
+    if (confirmButton) { confirmButton.disabled = false; confirmButton.innerHTML = '<i class="fa-solid fa-check"></i> Confirm'; }
 
     if (res.ok) {
-        toast(`✅ Booking confirmed with ${_calSelectedWorker.name} on ${_calSelectedDate} at ${time}!`);
+        setModalHidden(document.getElementById('customerCalendarModal'), true);
+        toast(`✅ Booking confirmed with ${_calSelectedWorker.name} on ${_calSelectedDate} from ${time} to ${endTime}!`);
         loadCustomerHomeData();
         if (state.customerView === 'bookings') loadCustomerBookings();
     } else {
         toast('❌ ' + (res.data?.message || 'Booking failed. Try another time.'));
     }
 });
+
+document.getElementById('calTimeSelect')?.addEventListener('change', () => {
+    if (_calSelectedDate) {
+        _calSelectedWorker = null;
+        _refreshCalendarWorkers(_calSelectedDate);
+    }
+});
+document.getElementById('calEndTimeSelect')?.addEventListener('change', () => {
+    if (_calSelectedDate) {
+        _calSelectedWorker = null;
+        _refreshCalendarWorkers(_calSelectedDate);
+    }
+});
+syncEndTimeSelect(document.getElementById('calTimeSelect'), document.getElementById('calEndTimeSelect'));
 
 
 
@@ -2051,25 +2252,42 @@ async function loadWorkerDashboardData() {
                 document.getElementById('wDropdownTrade') && (document.getElementById('wDropdownTrade').textContent = trade);
             }
             workerProfile = state.user.profile;
+            const availabilityValue = workerProfile?.is_available;
+            workerIsActive = availabilityValue === undefined || availabilityValue === null
+                ? true
+                : Boolean(Number(availabilityValue));
+            document.getElementById('workerDutyToggleBtn')?.classList.toggle('on', workerIsActive);
+            const dutyLabel = document.getElementById('dutyStatusLabel');
+            if (dutyLabel) dutyLabel.textContent = workerIsActive ? 'ACTIVE' : 'INACTIVE';
         }
     }
 
     // Fetch worker schedule and active availability slots from DB
     let workerSchedule = null;
     try {
-        const schedEndpoint = (workerProfile && workerProfile.id) ? `/api/workers/${workerProfile.id}/schedule` : '/api/workers/me/schedule';
+        const schedEndpoint = '/api/workers/me/schedule';
         const schedRes = await apiFetch(schedEndpoint);
         if (schedRes.ok && schedRes.data) {
             workerSchedule = schedRes.data;
         }
     } catch (_) {}
 
-    const workerPhone = state.user?.phone ? String(state.user.phone).replace(/\D/g, '') : '';
+    const workerPhone = normalizeUiPhone(state.user?.phone);
     const jobsUrl = workerPhone ? `/api/jobs?worker_phone=${encodeURIComponent(workerPhone)}` : '/api/jobs';
     const res = await apiFetch(jobsUrl);
     const allJobs = (res.ok && res.data.jobs) ? res.data.jobs : [];
+    const availableOpportunities = (res.ok && Array.isArray(res.data.opportunities)) ? res.data.opportunities : [];
+    const workerCancelledJobs = (res.ok && Array.isArray(res.data.workerCancelledJobs)) ? res.data.workerCancelledJobs : [];
+    const workerCancelledJobIds = new Set(workerCancelledJobs.map(j => String(j.id)));
+    const cleanWorkerPhone = workerPhone ? workerPhone.replace(/\D/g, '') : '';
+    const workerProfileId = workerProfile?.id || state.user?.profile?.id || null;
+    const isMyJob = job => {
+        const jobPhone = normalizeUiPhone(job?.worker_phone);
+        return (cleanWorkerPhone && jobPhone === cleanWorkerPhone)
+            || (workerProfileId && Number(job?.worker_id) === Number(workerProfileId));
+    };
     // Filter jobs strictly relevant to this worker
-    const jobs = workerPhone ? allJobs.filter(j => String(j.worker_phone || '').replace(/\D/g, '') === workerPhone || (j.worker_phone === null && j.status === 'Requested')) : [];
+    const jobs = allJobs.filter(isMyJob).filter(j => !workerCancelledJobIds.has(String(j.id)));
     state.jobs = jobs;
 
     // Availability Display — show slot or 'On Duty' from database schedule
@@ -2078,6 +2296,10 @@ async function loadWorkerDashboardData() {
     const slots = workerSchedule?.availabilitySlots || [];
     if (slots.length > 0) {
         const latest = slots[0];
+        workerIsActive = Boolean(latest.is_available);
+        document.getElementById('workerDutyToggleBtn')?.classList.toggle('on', workerIsActive);
+        const dutyLabel = document.getElementById('dutyStatusLabel');
+        if (dutyLabel) dutyLabel.textContent = workerIsActive ? 'ACTIVE' : 'INACTIVE';
         if (todayHoursLabel) {
             todayHoursLabel.textContent = `${latest.start_time} – ${latest.end_time} (${latest.date_str})`;
         }
@@ -2095,7 +2317,7 @@ async function loadWorkerDashboardData() {
     // Current In-Progress Job (worker's own)
     const currentJob = allJobs.find(j =>
         (j.status === 'In Progress' || j.status === 'On the Way') &&
-        (!workerPhone || j.worker_phone === workerPhone)
+        isMyJob(j)
     );
     const currentContainer = document.getElementById('workerCurrentBookingContainer');
     if (currentContainer) {
@@ -2105,17 +2327,17 @@ async function loadWorkerDashboardData() {
             currentContainer.innerHTML = `
                 <div class="booking-card">
                     <div class="booking-info">
-                        <h4 class="booking-service-title">${currentJob.service}</h4>
-                        <p style="font-size:13px;color:var(--gs-text-secondary);margin:2px 0 6px 0">${currentJob.problem_description}</p>
+                        <h4 class="booking-service-title">${escapeHtml(currentJob.service || 'Service request')}</h4>
+                        <p style="font-size:13px;color:var(--gs-text-secondary);margin:2px 0 6px 0">${escapeHtml(currentJob.problem_description || 'Service request')}</p>
                         <div class="booking-meta-row">
-                            <span><i class="fa-solid fa-user"></i> ${currentJob.customer_name || 'Customer'}</span>
-                            <span><i class="fa-solid fa-location-dot"></i> ${currentJob.location || state.city}</span>
-                            <span><i class="fa-solid fa-clock"></i> ${currentJob.requested_time}</span>
+                            <span><i class="fa-solid fa-user"></i> ${escapeHtml(currentJob.customer_name || 'Customer')}</span>
+                            <span><i class="fa-solid fa-location-dot"></i> ${escapeHtml(currentJob.location || state.city)}</span>
+                            <span><i class="fa-solid fa-clock"></i> ${escapeHtml(currentJob.requested_time || 'Time not set')}</span>
                         </div>
                     </div>
                     <div class="booking-actions-col">
                         <span class="status-pill progress">🟢 In Progress</span>
-                        <button type="button" class="btn btn-primary btn-sm" onclick="window._workerUpdateJobStatus('${currentJob.id}', 'Completed')">
+                        <button type="button" class="btn btn-primary btn-sm" onclick="window._workerUpdateJobStatus('${escapeHtml(currentJob.id)}', 'Completed')">
                             Mark Completed
                         </button>
                     </div>
@@ -2126,22 +2348,17 @@ async function loadWorkerDashboardData() {
 
     // GAP 3: Available Job Opportunities — unassigned Requested jobs in worker's city/trade
     const workerCity = state.user?.city || state.city;
-    const workerTrade2 = (state.user?.profile?.trade || state.user?.trade || '').toLowerCase();
-    const opportunities = availableOpportunities.length > 0 ? availableOpportunities : allJobs.filter(j =>
+    const opportunities = (availableOpportunities.length > 0 ? availableOpportunities : allJobs.filter(j =>
         j.status === 'Requested' && !j.worker_phone && (!workerCity || j.city === workerCity || j.city === state.city)
-    );
+    )).filter(j => !workerCancelledJobIds.has(String(j.id)));
 
     // Show opportunities and assigned bookings in the Assigned/Upcoming Bookings section
     const upcomingList = document.getElementById('workerUpcomingBookingsList');
     const assignedListEl = document.getElementById('workerAssignedJobsList');
-    const cleanWorkerPhone = workerPhone ? workerPhone.replace(/\D/g, '') : '';
 
     // Worker's own assigned/confirmed/accepted bookings across ALL dates
     const myUpcoming = allJobs.filter(j => {
-        const jp = (j.worker_phone || '').replace(/\D/g, '');
-        const profileId = workerProfile && workerProfile.id;
-        const isMyJob = (cleanWorkerPhone && jp === cleanWorkerPhone) || (profileId && Number(j.worker_id) === Number(profileId));
-        return isMyJob && ['Requested', 'Confirmed', 'Assigned', 'Accepted', 'In Progress', 'On the Way'].includes(j.status);
+        return isMyJob(j) && ['Requested', 'Confirmed', 'Assigned', 'Accepted', 'In Progress', 'On the Way'].includes(j.status);
     });
 
     let html = '';
@@ -2149,21 +2366,21 @@ async function loadWorkerDashboardData() {
     if (opportunities.length > 0) {
         html += `<div class="section-subtext" style="padding:8px 0 6px;font-size:12px;color:var(--gs-primary);font-weight:600;letter-spacing:.5px">📢 AVAILABLE JOB REQUESTS IN YOUR AREA</div>`;
         html += opportunities.map(j => `
-            <div class="booking-card" style="border-left:3px solid var(--gs-primary);">
-                <div class="booking-info">
-                    <h4 class="booking-service-title">${j.service} <span style="font-size:11px;font-weight:500;color:var(--gs-muted)">Job #${j.id}</span></h4>
-                    <p style="font-size:12.5px;color:var(--gs-text-secondary);margin:2px 0 5px">${j.problem_description}</p>
-                    <div class="booking-meta-row">
-                        <span><i class="fa-solid fa-clock"></i> ${j.requested_date} • ${j.requested_time}</span>
-                        <span><i class="fa-solid fa-location-dot"></i> ${j.location || j.city}</span>
-                        <span><i class="fa-solid fa-indian-rupee-sign"></i> ${j.budget || '₹300'}</span>
+                <div class="booking-card" style="border-left:3px solid var(--gs-primary);">
+                    <div class="booking-info">
+                        <h4 class="booking-service-title">${escapeHtml(j.service || 'Service request')} <span style="font-size:11px;font-weight:500;color:var(--gs-muted)">Job #${escapeHtml(j.id)}</span></h4>
+                        <p style="font-size:12.5px;color:var(--gs-text-secondary);margin:2px 0 5px">${escapeHtml(j.problem_description || 'Service request')}</p>
+                        <div class="booking-meta-row">
+                        <span><i class="fa-solid fa-clock"></i> ${escapeHtml(j.requested_date || 'Date not set')} • ${escapeHtml(j.requested_time || 'Time not set')}</span>
+                        <span><i class="fa-solid fa-location-dot"></i> ${escapeHtml(j.location || j.city)}</span>
+                        <span><i class="fa-solid fa-indian-rupee-sign"></i> ${escapeHtml(j.budget || '₹300')}</span>
                     </div>
                 </div>
                 <div class="booking-actions-col" style="gap:6px;">
-                    <button type="button" class="btn btn-primary btn-sm" onclick="window._workerAcceptJob('${j.id}')">
+                    <button type="button" class="btn btn-primary btn-sm" onclick="window._workerAcceptJob('${escapeHtml(j.id)}')">
                         <i class="fa-solid fa-check"></i> Accept
                     </button>
-                    <button type="button" class="btn btn-outline btn-sm" onclick="window._workerDeclineJob('${j.id}')">
+                    <button type="button" class="btn btn-outline btn-sm" onclick="window._workerDeclineJob('${escapeHtml(j.id)}')">
                         <i class="fa-solid fa-xmark"></i> Decline
                     </button>
                 </div>
@@ -2177,18 +2394,18 @@ async function loadWorkerDashboardData() {
         html += myUpcoming.map(j => `
             <div class="booking-card">
                 <div class="booking-info">
-                    <h4 class="booking-service-title">${j.service} <span style="font-size:11px;font-weight:500;color:var(--gs-muted)">Job #${j.id}</span></h4>
-                    <p style="font-size:12.5px;color:var(--gs-text-secondary);margin:2px 0 5px">${j.problem_description || 'Assigned Job'}</p>
+                    <h4 class="booking-service-title">${escapeHtml(j.service || 'Service request')} <span style="font-size:11px;font-weight:500;color:var(--gs-muted)">Job #${escapeHtml(j.id)}</span></h4>
+                    <p style="font-size:12.5px;color:var(--gs-text-secondary);margin:2px 0 5px">${escapeHtml(j.problem_description || 'Assigned Job')}</p>
                     <div class="booking-meta-row">
-                        <span><i class="fa-solid fa-clock"></i> ${j.requested_date} • ${j.requested_time}</span>
-                        <span><i class="fa-solid fa-location-dot"></i> ${j.location || state.city}</span>
-                        <span><i class="fa-solid fa-indian-rupee-sign"></i> ${j.budget || '₹300'}</span>
+                        <span><i class="fa-solid fa-clock"></i> ${escapeHtml(j.requested_date || 'Date not set')} • ${escapeHtml(j.requested_time || 'Time not set')}</span>
+                        <span><i class="fa-solid fa-location-dot"></i> ${escapeHtml(j.location || state.city)}</span>
+                        <span><i class="fa-solid fa-indian-rupee-sign"></i> ${escapeHtml(j.budget || '₹300')}</span>
                     </div>
                 </div>
                 <div class="booking-actions-col">
-                    <span class="status-pill ${j.status.toLowerCase().replace(/\s+/g, '-')}">${j.status}</span>
+                    <span class="status-pill ${statusCssClass(j.status)}">${escapeHtml(j.status || 'Requested')}</span>
                     ${j.status !== 'In Progress' && j.status !== 'Completed' ? `
-                        <button type="button" class="btn btn-primary btn-sm" onclick="window._workerUpdateJobStatus('${j.id}', 'In Progress')">
+                        <button type="button" class="btn btn-primary btn-sm" onclick="window._workerUpdateJobStatus('${escapeHtml(j.id)}', 'In Progress')">
                             Start Job
                         </button>
                     ` : ''}
@@ -2216,7 +2433,7 @@ window._workerUpdateJobStatus = async function(id, status) {
         if (state.workerView === 'bookings') loadWorkerBookings();
         if (state.workerView === 'earnings') loadWorkerEarnings();
     } else {
-        toast('Failed to update job status.');
+        toast('❌ ' + (res.data?.message || 'Failed to update job status.'));
     }
 };
 
@@ -2229,34 +2446,48 @@ window._workerAcceptJob = async function(id) {
         toast(`✅ Job #${id} accepted! It's now in your bookings.`);
         loadWorkerDashboardData();
     } else {
-        toast('Failed to accept job.');
+        toast('❌ ' + (res.data?.message || 'Failed to accept job.'));
     }
 };
 
 window._workerDeclineJob = async function(id) {
-    // Decline just removes from view for this worker — don't change status
-    toast(`Job #${id} declined. It remains available for other workers.`);
-    // Just refresh to reflect latest state
-    loadWorkerDashboardData();
+    const res = await apiFetch(`/api/jobs/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ worker_action: 'decline' })
+    });
+    if (res.ok) {
+        toast(`Job #${id} moved to your cancelled bookings.`);
+        loadWorkerDashboardData();
+        if (state.workerView === 'bookings') loadWorkerBookings();
+    } else {
+        toast('❌ ' + (res.data?.message || 'Failed to decline the job.'));
+    }
 };
 
 // Load Worker Bookings View
 async function loadWorkerBookings(filter = 'all') {
-    const workerPhone = state.user?.phone ? state.user.phone.replace(/\D/g, '') : '';
+    const workerPhone = normalizeUiPhone(state.user?.phone);
     const jobsUrl = workerPhone ? `/api/jobs?worker_phone=${encodeURIComponent(workerPhone)}` : '/api/jobs';
     const res = await apiFetch(jobsUrl);
     const allJobs = (res.ok && res.data.jobs) ? res.data.jobs : [];
-    const jobs = workerPhone ? allJobs.filter(j => {
-        const wp = (j.worker_phone || '').replace(/\D/g, '');
-        return (wp && wp === workerPhone) || (state.user && j.worker_id === state.user.id);
-    }) : [];
+    const workerCancelledJobs = (res.ok && Array.isArray(res.data.workerCancelledJobs)) ? res.data.workerCancelledJobs : [];
+    const workerCancelledJobIds = new Set(workerCancelledJobs.map(j => String(j.id)));
+    const profileId = state.user?.profile?.id;
+    const jobs = allJobs.filter(j => {
+        const wp = normalizeUiPhone(j.worker_phone);
+        return ((wp && wp === workerPhone) || (profileId && Number(j.worker_id) === Number(profileId)))
+            && !workerCancelledJobIds.has(String(j.id));
+    });
     state.jobs = jobs;
 
     let filtered = jobs;
     if (filter === 'current' || filter === 'active') filtered = jobs.filter(j => j.status === 'In Progress' || j.status === 'On the Way');
     else if (filter === 'upcoming') filtered = jobs.filter(j => j.status === 'Requested' || j.status === 'Confirmed' || j.status === 'Assigned' || j.status === 'Accepted');
     else if (filter === 'completed') filtered = jobs.filter(j => j.status === 'Completed');
-    else if (filter === 'cancelled') filtered = jobs.filter(j => j.status === 'Cancelled');
+    else if (filter === 'cancelled') filtered = [
+        ...jobs.filter(j => j.status === 'Cancelled'),
+        ...workerCancelledJobs.map(j => ({ ...j, status: 'Cancelled (Worker)', _workerCancelled: true }))
+    ];
 
     const listEl = document.getElementById('workerAllBookingsList');
     if (!listEl) return;
@@ -2269,16 +2500,16 @@ async function loadWorkerBookings(filter = 'all') {
     listEl.innerHTML = filtered.map(j => `
         <div class="booking-card">
             <div class="booking-info">
-                <h4 class="booking-service-title">${j.service}</h4>
-                <p style="font-size:13px;color:var(--gs-text-secondary);margin:2px 0 6px 0">${j.problem_description}</p>
+                <h4 class="booking-service-title">${escapeHtml(j.service || 'Service request')}</h4>
+                <p style="font-size:13px;color:var(--gs-text-secondary);margin:2px 0 6px 0">${escapeHtml(j.problem_description || 'Service request')}</p>
                 <div class="booking-meta-row">
-                    <span><i class="fa-solid fa-clock"></i> ${j.requested_date} • ${j.requested_time}</span>
-                    <span><i class="fa-solid fa-location-dot"></i> ${j.location || state.city}</span>
-                    <span><i class="fa-solid fa-indian-rupee-sign"></i> ${j.budget || '₹300'}</span>
+                    <span><i class="fa-solid fa-clock"></i> ${escapeHtml(j.requested_date || 'Date not set')} • ${escapeHtml(j.requested_time || 'Time not set')}</span>
+                    <span><i class="fa-solid fa-location-dot"></i> ${escapeHtml(j.location || state.city)}</span>
+                    <span><i class="fa-solid fa-indian-rupee-sign"></i> ${escapeHtml(j.budget || '₹300')}</span>
                 </div>
             </div>
             <div class="booking-actions-col">
-                <span class="status-pill ${j.status.toLowerCase().replace(/\s+/g, '-')}">${j.status}</span>
+                <span class="status-pill ${statusCssClass(j.status)}">${escapeHtml(j._workerCancelled ? 'Cancelled (Worker)' : (j.status || 'Requested'))}</span>
             </div>
         </div>
     `).join('');
@@ -2955,10 +3186,10 @@ function openAiVoiceModal() {
         }
     }
 
-    aiVoiceModal?.classList.remove('hidden');
+    setModalHidden(aiVoiceModal, false);
 }
 function closeAiVoiceModal() {
-    aiVoiceModal?.classList.add('hidden');
+    setModalHidden(aiVoiceModal, true);
     if (state.isAiModalRecording) {
         stopAiModalListening(false);
     }

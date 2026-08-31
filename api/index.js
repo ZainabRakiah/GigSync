@@ -7,6 +7,7 @@ const DB = require('../backend/database');
 const FirebaseSync = require('../backend/firebase');
 const { aiAgent, AI_TOOLS, sessionManager } = require('../backend/ai_agent');
 const { resolveAiCaller, getAuthSession } = require('../backend/caller_identity');
+const { authorizeJobMutation, workerForSession, samePhone } = require('../backend/job_policy');
 
 function parseBody(req) {
     return new Promise((resolve) => {
@@ -29,6 +30,35 @@ function sendJSON(res, data, statusCode = 200) {
     }
     res.statusCode = statusCode;
     res.end(JSON.stringify(data));
+}
+
+// Availability is a worker-owned resource. Resolve the route target from the
+// authenticated session instead of trusting worker_id/worker_phone in a body.
+// Admins may operate on an explicit worker id for support tasks; normal workers
+// may only operate on their own profile (or the /me alias).
+function authorizedWorkerRoute(req, routeWorkerId) {
+    const session = getAuthSession(req);
+    if (!session) return { error: { code: 401, message: 'Authentication is required.' } };
+
+    if (routeWorkerId === 'me') {
+        if (session.role !== 'worker') {
+            return { error: { code: 403, message: 'Worker authorization required.' } };
+        }
+        const worker = workerForSession(session);
+        return worker
+            ? { session, worker }
+            : { error: { code: 404, message: 'Worker profile not found.' } };
+    }
+
+    const worker = DB.getWorkerById(Number(routeWorkerId));
+    if (!worker) return { error: { code: 404, message: 'Worker profile not found.' } };
+    if (session.role === 'admin') return { session, worker };
+
+    const ownWorker = workerForSession(session);
+    if (session.role !== 'worker' || !ownWorker || Number(ownWorker.id) !== Number(worker.id)) {
+        return { error: { code: 403, message: 'You can only manage your own availability.' } };
+    }
+    return { session, worker };
 }
 
 module.exports = async (req, res) => {
@@ -203,9 +233,11 @@ module.exports = async (req, res) => {
     if (pathname.endsWith('/workers/available') && req.method === 'GET') {
         const date = params.get('date');
         const city = params.get('city') || null;
+        const requestedTime = params.get('requested_time') || params.get('time') || null;
+        const requestedEndTime = params.get('requested_end_time') || params.get('end_time') || null;
         if (!date) return sendJSON(res, { status: 'error', message: 'date parameter required.' }, 400);
         try {
-            const workers = DB.getWorkersAvailableOnDate(date, city);
+            const workers = DB.getWorkersAvailableOnDate(date, city, requestedTime, requestedEndTime);
             return sendJSON(res, { status: 'success', workers });
         } catch (err) {
             console.error('[Vercel Workers Available Error]', err);
@@ -267,21 +299,9 @@ module.exports = async (req, res) => {
     // GET /api/workers/me/availability/conflicts or GET /api/workers/:id/availability/conflicts
     const conflictRouteMatch = pathname.match(/\/workers\/(me|\d+)\/availability\/conflicts/);
     if (conflictRouteMatch && req.method === 'GET') {
-        const session = getAuthSession(req);
-        let worker = null;
-        if (conflictRouteMatch[1] !== 'me') {
-            worker = DB.getWorkerById(Number(conflictRouteMatch[1]));
-        }
-        if (!worker && session) {
-            worker = DB.getWorkerByUserId(session.user_id) || DB.getWorkerByPhone(session.phone);
-        }
-        if (!worker && params.get('worker_id')) {
-            worker = DB.getWorkerById(Number(params.get('worker_id')));
-        }
-
-        if (!worker) {
-            return sendJSON(res, { status: 'error', message: 'Worker profile not found.' }, 404);
-        }
+        const access = authorizedWorkerRoute(req, conflictRouteMatch[1]);
+        if (access.error) return sendJSON(res, { status: 'error', message: access.error.message }, access.error.code);
+        const { worker } = access;
 
         let proposedSlots = [];
         try { proposedSlots = JSON.parse(params.get('slots') || '[]'); } catch (_) {}
@@ -293,35 +313,29 @@ module.exports = async (req, res) => {
     // POST /api/workers/me/availability/resolve or POST /api/workers/:id/availability/resolve
     const resolveRouteMatch = pathname.match(/\/workers\/(me|\d+)\/availability\/resolve/);
     if (resolveRouteMatch && req.method === 'POST') {
+        const access = authorizedWorkerRoute(req, resolveRouteMatch[1]);
+        if (access.error) return sendJSON(res, { status: 'error', message: access.error.message }, access.error.code);
+        const { session, worker } = access;
         const body = await parseBody(req);
         const decisions = Array.isArray(body.decisions) ? body.decisions : [];
-        const results = decisions.map(d => DB.resolveAvailabilityConflict(d.jobId, Boolean(d.canWork)));
+        if (decisions.length > 100) return sendJSON(res, { status: 'error', message: 'Too many availability decisions.' }, 400);
+        const results = decisions.map(d => {
+            const job = DB.getJobById(d.jobId);
+            const ownsJob = session.role === 'admin'
+                || (job && (Number(job.worker_id) === Number(worker.id) || samePhone(job.worker_phone, worker.phone)));
+            if (!ownsJob) return { jobId: d.jobId, action: 'not_allowed' };
+            return DB.resolveAvailabilityConflict(d.jobId, Boolean(d.canWork));
+        });
         return sendJSON(res, { status: 'success', results });
     }
 
     // POST or PATCH /api/workers/me/availability or /api/workers/:id/availability
     const availRouteMatch = pathname.match(/\/workers\/(me|\d+)\/availability/);
     if (availRouteMatch && (req.method === 'PATCH' || req.method === 'POST')) {
-        const session = getAuthSession(req);
+        const access = authorizedWorkerRoute(req, availRouteMatch[1]);
+        if (access.error) return sendJSON(res, { status: 'error', message: access.error.message }, access.error.code);
+        const { worker } = access;
         const body = await parseBody(req);
-
-        let worker = null;
-        if (availRouteMatch[1] !== 'me') {
-            worker = DB.getWorkerById(Number(availRouteMatch[1]));
-        }
-        if (!worker && session) {
-            worker = DB.getWorkerByUserId(session.user_id) || DB.getWorkerByPhone(session.phone);
-        }
-        if (!worker && body.worker_id) {
-            worker = DB.getWorkerById(body.worker_id);
-        }
-        if (!worker && body.worker_phone) {
-            worker = DB.getWorkerByPhone(body.worker_phone);
-        }
-
-        if (!worker) {
-            return sendJSON(res, { status: 'error', message: 'Worker profile not found.' }, 404);
-        }
 
         if (body.is_available !== undefined) {
             DB.updateWorkerAvailabilityStatus(worker.id, body.is_available);
@@ -393,6 +407,7 @@ module.exports = async (req, res) => {
             area: body.area,
             email: body.email
         });
+        if (!customer) return sendJSON(res, { status: 'error', message: 'Customer profile not found.' }, 404);
 
         return sendJSON(res, { status: 'success', message: 'Profile updated.', customer });
     }
@@ -411,20 +426,20 @@ module.exports = async (req, res) => {
 
         let jobs = [];
         let availableOpportunities = [];
+        let workerCancelledJobs = [];
 
         try {
-            if (session && session.role === 'worker') {
-                const worker = DB.getWorkerByUserId(session.user_id) || DB.getWorkerByPhone(session.phone);
-                if (worker) {
-                    jobs = DB.getJobsByWorker(worker.phone || worker.id);
-                    availableOpportunities = DB.getAvailableJobsForWorker(worker.trade, worker.city);
-                }
+        if (session && session.role === 'worker') {
+            const worker = DB.getWorkerByUserId(session.user_id) || DB.getWorkerByPhone(session.phone);
+            if (worker) {
+                jobs = DB.getJobsByWorker(worker.phone || worker.id);
+                availableOpportunities = DB.getAvailableJobsForWorker(worker.trade, worker.city);
+                workerCancelledJobs = DB.getJobsCancelledByWorker(worker.id);
+            }
             } else if (session && session.role === 'customer') {
                 jobs = DB.getJobsByCustomer(session.phone);
-            } else if (phone) {
-                jobs = DB.getJobsByCustomer(phone);
-            } else if (workerPhone) {
-                jobs = DB.getJobsByWorker(workerPhone);
+            } else if (phone || workerPhone) {
+                return sendJSON(res, { status: 'error', message: 'Authentication is required to query bookings.' }, 401);
             } else if (session && session.role === 'admin') {
                 jobs = DB.getAllJobs({ status, city });
             } else {
@@ -439,45 +454,65 @@ module.exports = async (req, res) => {
             status: 'success',
             count: jobs.length,
             jobs,
-            opportunities: availableOpportunities
+            opportunities: availableOpportunities,
+            workerCancelledJobs
         });
     }
 
     // POST /api/jobs
     if (pathname.endsWith('/jobs') && req.method === 'POST') {
         const body = await parseBody(req);
-        if (!body.service || !body.problem_description || !body.customer_phone) {
+        const session = getAuthSession(req);
+        if (session && !['customer', 'admin'].includes(session.role)) {
+            return sendJSON(res, { status: 'error', message: 'Only customers or administrators can create bookings.' }, 403);
+        }
+        const customerPhone = String(session?.role === 'customer' ? session.phone : (body.customer_phone || '')).replace(/\D/g, '').slice(-10);
+        if (!body.service || !String(body.service).trim() || !body.problem_description || !String(body.problem_description).trim() || customerPhone.length < 10) {
             return sendJSON(res, { status: 'error', message: 'Service, problem description, and customer phone are required.' }, 400);
         }
 
+        let selectedWorker = null;
+        if (body.worker_id !== undefined && body.worker_id !== null && String(body.worker_id) !== '') {
+            selectedWorker = DB.getWorkerById(Number(body.worker_id));
+            if (!selectedWorker) return sendJSON(res, { status: 'error', message: 'Selected worker was not found.' }, 404);
+        } else if (body.worker_phone) {
+            selectedWorker = DB.getWorkerByPhone(body.worker_phone);
+            if (!selectedWorker) return sendJSON(res, { status: 'error', message: 'Selected worker was not found.' }, 404);
+        }
+
         // Schedule Conflict Prevention Check
-        if (body.worker_id && body.requested_date && body.requested_time) {
-            const hasConflict = DB.checkScheduleConflict(body.worker_id, body.requested_date, body.requested_time);
+        const requestedEndTime = body.requested_end_time || body.requestedEndTime || null;
+        if (selectedWorker && body.requested_date && body.requested_time && !['Today', 'Immediate'].includes(String(body.requested_date))) {
+            const hasConflict = DB.checkScheduleConflict(selectedWorker.id, body.requested_date, body.requested_time, requestedEndTime);
             if (hasConflict) {
                 return sendJSON(res, {
                     status: 'error',
-                    message: 'This worker already has an accepted booking or is not available during this time slot. Please choose another time or worker.'
+                    message: hasConflict === 'NotAvailable'
+                        ? 'This worker has not set availability for the selected date.'
+                        : hasConflict === 'OutsideHours'
+                            ? 'The selected time is outside this worker\'s working hours.'
+                            : 'This worker already has an accepted booking during this time slot. Please choose another time or worker.'
                 }, 409);
             }
         }
 
-        const session = getAuthSession(req);
         try {
             const newJob = DB.createJob({
-                customer_id: session ? session.user_id : null,
-                customer_phone: body.customer_phone,
-                customer_name: body.customer_name || (session ? session.name : 'Customer'),
-                worker_id: body.worker_id || null,
-                worker_phone: body.worker_phone || null,
-                worker_name: body.worker_name || 'Broadcasting to nearby verified specialists...',
+                customer_id: session?.role === 'customer' ? session.user_id : (session?.role === 'admin' ? body.customer_id : null),
+                customer_phone: customerPhone,
+                customer_name: session?.role === 'customer' ? session.name : (body.customer_name || 'Customer'),
+                worker_id: selectedWorker ? selectedWorker.id : null,
+                worker_phone: selectedWorker ? selectedWorker.phone : null,
+                worker_name: selectedWorker ? selectedWorker.name : 'Broadcasting to nearby verified specialists...',
                 service: body.service,
                 problem_description: body.problem_description,
                 location: body.location || 'Town Area',
-                city: body.city || (session ? session.city : 'Ramanagara'),
+                city: body.city || (session?.city || 'Ramanagara'),
                 requested_date: body.requested_date || 'Today',
                 requested_time: body.requested_time || 'Immediate',
+                requested_end_time: requestedEndTime,
                 budget: body.budget || '₹350',
-                status: body.status || (body.worker_id ? 'Confirmed' : 'Requested'),
+                status: selectedWorker ? (body.status || 'Confirmed') : 'Requested',
                 payment_method: body.payment_method || 'Cash'
             });
 
@@ -488,34 +523,81 @@ module.exports = async (req, res) => {
         }
     }
 
-    // PATCH /api/jobs/:id
+    // GET /api/jobs/:id
     const jobUpdateMatch = pathname.match(/\/jobs\/([A-Za-z0-9-]+)$/);
-    if (jobUpdateMatch && req.method === 'PATCH') {
+    if (jobUpdateMatch && req.method === 'GET') {
+        const session = getAuthSession(req);
+        const job = DB.getJobById(jobUpdateMatch[1]);
+        if (!job) return sendJSON(res, { status: 'error', message: 'Job not found.' }, 404);
+        if (!session) return sendJSON(res, { status: 'error', message: 'Authentication is required.' }, 401);
+        const worker = workerForSession(session);
+        const canRead = session.role === 'admin'
+            || (session.role === 'customer' && (samePhone(job.customer_phone, session.phone) || String(job.customer_id) === String(session.user_id)))
+            || (session.role === 'worker' && worker && (Number(job.worker_id) === Number(worker.id) || samePhone(job.worker_phone, worker.phone)));
+        if (!canRead) return sendJSON(res, { status: 'error', message: 'You are not allowed to view this booking.' }, 403);
+        return sendJSON(res, { status: 'success', job });
+    }
+
+    // PATCH/PUT /api/jobs/:id
+    if (jobUpdateMatch && (req.method === 'PATCH' || req.method === 'PUT')) {
         const jobId = jobUpdateMatch[1];
         const body = await parseBody(req);
-
-        if (!body.status) {
-            return sendJSON(res, { status: 'error', message: 'New status is required.' }, 400);
-        }
-
         const session = getAuthSession(req);
-        let workerId = body.worker_id || body.workerId || null;
-        let workerName = body.worker_name || body.workerName || null;
-        let workerPhone = body.worker_phone || body.workerPhone || null;
+        const job = DB.getJobById(jobId);
+        if (!job) return sendJSON(res, { status: 'error', message: 'Job not found.' }, 404);
+        if (!session) return sendJSON(res, { status: 'error', message: 'Authentication is required to change a booking.' }, 401);
 
-        if (session && session.role === 'worker' && !workerId) {
-            const worker = DB.getWorkerByUserId(session.user_id);
-            if (worker) {
-                workerId = worker.id;
-                workerName = worker.name;
-                workerPhone = worker.phone;
-            }
+        const hasStatus = body.status !== undefined && body.status !== null && String(body.status).trim() !== '';
+        const nextStatus = hasStatus ? String(body.status).trim() : job.status;
+        const hasDetails = ['service', 'problem_description', 'location', 'city', 'requested_date', 'requested_time', 'requested_end_time', 'budget', 'payment_method']
+            .some(key => body[key] !== undefined);
+        if (!hasStatus && !(session.role === 'admin' && hasDetails) && !(session.role === 'worker' && body.worker_action)) {
+            return sendJSON(res, { status: 'error', message: 'A new status is required.' }, 400);
         }
 
-        const updated = DB.updateJobStatus(jobId, body.status, workerId, workerName, workerPhone);
-        if (!updated) return sendJSON(res, { status: 'error', message: 'Job not found.' }, 404);
+        if (session.role === 'worker' && body.worker_action) {
+            const worker = DB.getWorkerByUserId(session.user_id) || DB.getWorkerByPhone(session.phone);
+            if (!worker) return sendJSON(res, { status: 'error', message: 'Worker profile not found.' }, 404);
+            const workerAction = String(body.worker_action).toLowerCase().trim();
+            if (!['decline', 'cancel', 'cancelled'].includes(workerAction)) {
+                return sendJSON(res, { status: 'error', message: 'Unsupported worker action.' }, 400);
+            }
+            const result = DB.workerCancelJob(jobId, worker.id, worker.name, worker.phone);
+            if (!result.ok) return sendJSON(res, { status: 'error', message: result.message || 'Unable to cancel the booking.' }, 409);
+            const updatedJob = result.job || DB.getJobById(jobId);
+            return sendJSON(res, { status: 'success', message: 'Your copy of this request was moved to cancelled bookings.', job: updatedJob });
+        }
 
-        return sendJSON(res, { status: 'success', message: `Job #${jobId} status updated to ${body.status}.`, job: updated });
+        const decision = authorizeJobMutation(job, session, nextStatus);
+        if (!decision.ok) return sendJSON(res, { status: 'error', message: decision.message }, decision.code);
+
+        if (decision.worker && !job.worker_id && !job.worker_phone && hasStatus && ['Confirmed', 'Accepted'].includes(nextStatus)
+            && job.requested_date && job.requested_time && !['Today', 'Immediate'].includes(String(job.requested_date))) {
+            const conflict = DB.checkScheduleConflict(decision.worker.id, job.requested_date, job.requested_time, job.requested_end_time);
+            if (conflict) return sendJSON(res, { status: 'error', message: 'This booking does not fit your availability or conflicts with another job.' }, 409);
+        }
+
+        let updated = job;
+        if (hasStatus || decision.worker) {
+            updated = DB.updateJobStatus(jobId, nextStatus,
+                decision.worker ? decision.worker.id : null,
+                decision.worker ? decision.worker.name : null,
+                decision.worker ? decision.worker.phone : null);
+        }
+        if (session.role === 'admin' && hasDetails) updated = DB.updateJobDetails(jobId, body);
+        if (!updated) return sendJSON(res, { status: 'error', message: 'Booking could not be updated.' }, 409);
+
+        return sendJSON(res, { status: 'success', message: `Job #${jobId} updated.`, job: updated });
+    }
+
+    // DELETE /api/jobs/:id — soft-cancel so booking history remains auditable.
+    if (jobUpdateMatch && req.method === 'DELETE') {
+        const job = DB.getJobById(jobUpdateMatch[1]);
+        const session = getAuthSession(req);
+        const decision = authorizeJobMutation(job, session, 'Cancelled');
+        if (!decision.ok) return sendJSON(res, { status: 'error', message: decision.message }, decision.code);
+        const updated = DB.deleteJob(job.id);
+        return sendJSON(res, { status: 'success', message: `Job #${job.id} cancelled.`, job: updated });
     }
 
     // POST /api/jobs/:id/review
@@ -523,11 +605,21 @@ module.exports = async (req, res) => {
     if (jobReviewMatch && req.method === 'POST') {
         const jobId = jobReviewMatch[1];
         const body = await parseBody(req);
-        if (!body.rating) {
+        const session = getAuthSession(req);
+        const job = DB.getJobById(jobId);
+        if (!session) return sendJSON(res, { status: 'error', message: 'Authentication is required to review a booking.' }, 401);
+        if (!job) return sendJSON(res, { status: 'error', message: 'Job not found.' }, 404);
+        const ownsJob = session.role === 'admin'
+            || (session.role === 'customer' && (samePhone(job.customer_phone, session.phone) || String(job.customer_id) === String(session.user_id)));
+        if (!ownsJob) return sendJSON(res, { status: 'error', message: 'Only the customer who booked this service can review it.' }, 403);
+        const rating = Number(body.rating);
+        if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
             return sendJSON(res, { status: 'error', message: 'Rating (1 to 5) is required.' }, 400);
         }
+        if (job.status !== 'Completed') return sendJSON(res, { status: 'error', message: 'You can review a booking after it is completed.' }, 409);
+        if (job.rating !== null && job.rating !== undefined) return sendJSON(res, { status: 'error', message: 'This booking has already been reviewed.' }, 409);
 
-        const updated = DB.submitJobReview(jobId, Number(body.rating), body.review || '');
+        const updated = DB.submitJobReview(jobId, rating, body.review || '');
         if (!updated) return sendJSON(res, { status: 'error', message: 'Job not found.' }, 404);
 
         return sendJSON(res, { status: 'success', message: 'Review submitted.', job: updated });

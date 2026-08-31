@@ -78,7 +78,7 @@ async function awaitFirebase(dbResult) {
 // 1. Definition of Real Database Tools (No Assumptions, No Fabricated Records)
 const AI_TOOLS = {
     // 0. Simple Unified Worker Registration & Availability Upsert
-    async registerOrUpdateWorker({ name, phone, job_role, trade, availability_date, date, start_time, startTime, end_time, endTime, city = 'Ramanagara', password = null }) {
+    async registerOrUpdateWorker({ name, phone, job_role, trade, availability_date, date, start_time, startTime, end_time, endTime, pattern = 'once', daysOfWeek = [], rangeStart = null, rangeEnd = null, city = 'Ramanagara', password = null }) {
         const cleanPhone = (phone || '').replace(/\D/g, '');
         if (cleanPhone.length !== 10) {
             return { status: 'error', persisted: false, message: 'A valid 10-digit phone number is required.' };
@@ -95,6 +95,10 @@ const AI_TOOLS = {
             availability_date: effectiveDate,
             start_time: effectiveStart,
             end_time: effectiveEnd,
+            pattern,
+            daysOfWeek,
+            rangeStart: rangeStart || effectiveDate,
+            rangeEnd,
             city,
             password
         });
@@ -166,7 +170,7 @@ const AI_TOOLS = {
     },
 
     // 2. Worker Availability Update
-    async updateWorkerAvailability({ workerPhone, trade = 'Skilled Specialist', date = 'Tomorrow', startTime, endTime, isAvailable = true, confirmed = false }) {
+    async updateWorkerAvailability({ workerPhone, trade = 'Skilled Specialist', date = 'Tomorrow', startTime, endTime, isAvailable = true, confirmed = false, pattern = 'once', daysOfWeek = [], rangeStart = null, rangeEnd = null }) {
         const { clean, worker } = resolveWorker(workerPhone);
 
         // An availability slot must belong to a real worker; otherwise it is an orphan record.
@@ -204,12 +208,12 @@ const AI_TOOLS = {
         // worker's first sentence, without ever asking.
         if (!confirmed) {
             const summary = isAvailable
-                ? `${date}, ${effectiveStart} to ${effectiveEnd}`
+                ? `${pattern === 'weekly' && daysOfWeek.length ? `${date} on ${daysOfWeek.join(', ')}` : date}, ${effectiveStart} to ${effectiveEnd}`
                 : `${date} as a day off`;
             return {
                 status: 'confirmation_required',
                 persisted: false,
-                pendingChange: { date, startTime: effectiveStart, endTime: effectiveEnd, isAvailable: Boolean(isAvailable) },
+                pendingChange: { date, startTime: effectiveStart, endTime: effectiveEnd, isAvailable: Boolean(isAvailable), pattern, daysOfWeek, rangeStart, rangeEnd },
                 message: `NOT SAVED YET. Read these exact details back to the worker and ask them to confirm: ${summary}. If they say yes, call updateWorkerAvailability again with the same values and confirmed set to true. If they change any detail, use the new values and ask again.`
             };
         }
@@ -222,7 +226,11 @@ const AI_TOOLS = {
             startTime: effectiveStart,
             endTime: effectiveEnd,
             isAvailable: Boolean(isAvailable),
-            notes: isAvailable ? '' : 'Worker marked this day as not working'
+            notes: isAvailable ? '' : 'Worker marked this day as not working',
+            pattern,
+            daysOfWeek,
+            rangeStart: rangeStart || date,
+            rangeEnd
         });
 
         DB.updateWorkerAvailabilityStatus(worker.id, isAvailable);
@@ -669,18 +677,19 @@ const AI_TOOLS = {
     },
 
     // 7. Find Real Registered Workers from Database (Customer Tool)
-    findWorkers({ service, trade, city = 'Ramanagara' } = {}) {
+    findWorkers({ service, trade, city = 'Ramanagara', requestedDate = null, requestedTime = null, requestedEndTime = null } = {}) {
         const targetTrade = trade || (service && service !== 'all' ? service : undefined);
         const workers = DB.getAllWorkers({
             service: targetTrade,
             city: city,
             isAvailable: true
-        });
+        }) || [];
+        const availableWorkers = getAvailableWorkersForSlot(workers, requestedDate, requestedTime, requestedEndTime);
 
         return {
             status: 'success',
-            count: workers.length,
-            workers: workers.map(w => ({
+            count: availableWorkers.length,
+            workers: availableWorkers.map(w => ({
                 id: w.id,
                 name: w.name,
                 phone: w.phone,
@@ -698,7 +707,7 @@ const AI_TOOLS = {
     },
 
     // 8. Create Job in Real Database (Customer Tool)
-    createJob({ customerPhone = '9876543210', customerName = 'Customer', service, problemDescription, location = 'Town Area', city = 'Ramanagara', requestedDate = 'Today', requestedTime = 'Immediate', budget = '₹300', workerId = null, workerName = null, workerPhone = null }) {
+    createJob({ customerPhone = '9876543210', customerName = 'Customer', service, problemDescription, location = 'Town Area', city = 'Ramanagara', requestedDate = 'Today', requestedTime = 'Immediate', requestedEndTime = null, budget = '₹300', workerId = null, workerName = null, workerPhone = null }) {
         let assignedWorker = null;
         if (workerId) {
             assignedWorker = DB.getWorkerById(workerId);
@@ -708,7 +717,7 @@ const AI_TOOLS = {
 
         // Schedule Conflict Prevention Check for Direct Worker Bookings
         if (assignedWorker && requestedDate && requestedTime && requestedDate !== 'Today' && requestedTime !== 'Immediate') {
-            const conflict = DB.checkScheduleConflict(assignedWorker.id, requestedDate, requestedTime);
+            const conflict = DB.checkScheduleConflict(assignedWorker.id, requestedDate, requestedTime, requestedEndTime);
             if (conflict) {
                 let reason = '';
                 if (conflict === 'NotAvailable') reason = `${assignedWorker.name} has not set working availability for ${requestedDate}.`;
@@ -733,6 +742,7 @@ const AI_TOOLS = {
             city: city || 'Ramanagara',
             requested_date: requestedDate,
             requested_time: requestedTime,
+            requested_end_time: requestedEndTime,
             budget: budget || '₹300',
             worker_id: assignedWorker ? assignedWorker.id : null,
             worker_phone: assignedWorker ? assignedWorker.phone : (workerPhone || null),
@@ -837,7 +847,7 @@ const GEMINI_TOOLS_DECLARATIONS = [
     },
     {
         name: 'updateWorkerAvailability',
-        description: 'Set the calling worker\'s working hours for one day, or mark that day off. To set hours you MUST have both a start and an end time — ask the worker for whichever is missing instead of guessing. To mark a day off, pass isAvailable:false and no times are needed ("I don\'t want to work tomorrow"). NOTHING IS SAVED until you call this a second time with confirmed:true, after the worker has agreed to the exact details.',
+        description: 'Set the calling worker\'s working hours for one day, or save a recurring daily or weekly schedule. To set hours you MUST have both a start and an end time — ask the worker for whichever is missing instead of guessing. For weekly availability, also collect the weekday(s). To mark a day off, pass isAvailable:false and no times are needed ("I don\'t want to work tomorrow"). NOTHING IS SAVED until you call this a second time with confirmed:true, after the worker has agreed to the exact details.',
         parameters: {
             type: 'OBJECT',
             properties: {
@@ -847,6 +857,10 @@ const GEMINI_TOOLS_DECLARATIONS = [
                 startTime: { type: 'STRING', description: 'Start time e.g. 09:00 AM. Required when isAvailable is true.' },
                 endTime: { type: 'STRING', description: 'End time e.g. 05:00 PM. Required when isAvailable is true.' },
                 isAvailable: { type: 'BOOLEAN', description: 'True = working these hours. False = not working that day (no times required).' },
+                pattern: { type: 'STRING', description: 'Schedule pattern: once, daily, or weekly' },
+                daysOfWeek: { type: 'ARRAY', items: { type: 'NUMBER' }, description: 'Weekly day numbers where 0=Sunday and 6=Saturday' },
+                rangeStart: { type: 'STRING', description: 'Recurring schedule start date or date label' },
+                rangeEnd: { type: 'STRING', description: 'Optional recurring schedule end date' },
                 confirmed: { type: 'BOOLEAN', description: 'Set true ONLY after you read the exact day and hours back to the worker and they agreed. Leave false or omit on the first call — the tool will then tell you what to confirm.' }
             },
             required: ['date']
@@ -992,7 +1006,10 @@ const GEMINI_TOOLS_DECLARATIONS = [
             type: 'OBJECT',
             properties: {
                 service: { type: 'STRING', description: 'Trade or service category, e.g. Electrical, Plumbing, Carpentry, Mechanics, Painting' },
-                city: { type: 'STRING', description: 'City name e.g. Ramanagara' }
+                city: { type: 'STRING', description: 'City name e.g. Ramanagara' },
+                requestedDate: { type: 'STRING', description: 'Requested service date' },
+                requestedTime: { type: 'STRING', description: 'Requested service time' },
+                requestedEndTime: { type: 'STRING', description: 'Requested service end time if known' }
             },
             required: ['service']
         }
@@ -1009,6 +1026,7 @@ const GEMINI_TOOLS_DECLARATIONS = [
                 location: { type: 'STRING', description: 'Neighborhood or address' },
                 requestedDate: { type: 'STRING', description: 'Requested service date' },
                 requestedTime: { type: 'STRING', description: 'Requested time' },
+                requestedEndTime: { type: 'STRING', description: 'Requested end time when the caller gives a time range' },
                 budget: { type: 'STRING', description: 'Budget or fee' },
                 workerId: { type: 'STRING', description: 'ID of worker if booking a specific worker' },
                 workerName: { type: 'STRING', description: 'Name of worker if booking a specific worker' },
@@ -1242,7 +1260,7 @@ SLOT-FILLING & ONBOARDING SEQUENCE:
    - Name
    - Phone (10 digits starting with 6-9)
    - Occupation / Trade (e.g. Electrician, Plumber, Carpenter, Mechanic, Painter, Mason, Tailor, Welder)
-   - Availability Date (e.g. Tomorrow, Today, or a weekday)
+   - Availability Date or recurring pattern (e.g. Tomorrow, Today, a weekday, daily, every Monday, or weekdays)
    - Working Hours (Start Time & End Time, e.g. 9 AM to 5 PM)
 4. Extract all entities present in the user's message.
 5. If fields are missing in Current Worker Draft, ask for the next missing field in strict natural order:
@@ -1250,9 +1268,9 @@ SLOT-FILLING & ONBOARDING SEQUENCE:
    - If only Occupation was given ("I am electrician"): "Sure! What is your name?"
    - If Name was given ("I am Asad"): "Thank you, Asad. What is your 10-digit mobile number?"
    - If Phone was given ("7012280695"): "What type of work do you do?" (or ask for availability if trade is already known)
-   - If Trade is known: "What day and hours are you available? For example, tomorrow 9 AM to 5 PM."
+   - If Trade is known: "What day or repeating schedule are you available for? For example, tomorrow 9 AM to 5 PM, every Monday 9 AM to 5 PM, or daily 9 AM to 5 PM."
 6. When all 5 fields are present, summarize and ask for confirmation before saving:
-   "Got it. You are [Name], a/an [Occupation], available [Date] from [StartTime] to [EndTime]. Shall I save these details?"
+   "Got it. You are [Name], a/an [Occupation], available [Date or repeating schedule] from [StartTime] to [EndTime]. Shall I save these details?"
 7. Only after the caller confirms (e.g. "Yes", "Save it", "Please save"), call registerWorkerProfile and updateWorkerAvailability with confirmed: true.
 
 FOR RETURNING REGISTERED WORKERS:
@@ -1722,39 +1740,89 @@ function extractDateTimeEntities(text) {
     let date = null;
     let time = null;
 
+    const monthLookup = {
+        january: 'January', jan: 'January',
+        february: 'February', feb: 'February',
+        march: 'March', mar: 'March',
+        april: 'April', apr: 'April',
+        may: 'May',
+        june: 'June', jun: 'June',
+        july: 'July', jul: 'July',
+        august: 'August', aug: 'August',
+        september: 'September', sept: 'September', sep: 'September',
+        october: 'October', oct: 'October',
+        november: 'November', nov: 'November',
+        december: 'December', dec: 'December'
+    };
+    const ordinalSuffix = n => {
+        const mod100 = n % 100;
+        if (mod100 >= 11 && mod100 <= 13) return 'th';
+        switch (n % 10) {
+            case 1: return 'st';
+            case 2: return 'nd';
+            case 3: return 'rd';
+            default: return 'th';
+        }
+    };
+    const formatNaturalDateLabel = (day, month, year = null) => {
+        const suffix = ordinalSuffix(day);
+        return year ? `${day}${suffix} ${month} ${year}` : `${day}${suffix} ${month}`;
+    };
+
+    const explicitDate = (() => {
+        const normalized = lower.replace(/\bof\b/g, ' ').replace(/,/g, ' ').replace(/\s+/g, ' ').trim();
+        const dayFirst = normalized.match(/\b(\d{1,2})(?:st|nd|rd|th)?\s+([a-z]+)(?:\s+(\d{4}))?\b/i);
+        if (dayFirst) {
+            const day = Number(dayFirst[1]);
+            const month = monthLookup[dayFirst[2].toLowerCase()];
+            if (month) return formatNaturalDateLabel(day, month, dayFirst[3] || null);
+        }
+        const monthFirst = normalized.match(/\b([a-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s+(\d{4}))?\b/i);
+        if (monthFirst) {
+            const month = monthLookup[monthFirst[1].toLowerCase()];
+            const day = Number(monthFirst[2]);
+            if (month) return formatNaturalDateLabel(day, month, monthFirst[3] || null);
+        }
+        return null;
+    })();
+
+    if (explicitDate) {
+        date = explicitDate;
+    }
+
     // Date Matching with Speech-to-Text Tolerance (tom, tmrw, today today, etc.)
-    if (lower.includes('tomorrow morning')) {
+    if (!date && lower.includes('tomorrow morning')) {
         date = 'Tomorrow';
         time = 'Morning (10:00 AM)';
-    } else if (lower.includes('tomorrow afternoon')) {
+    } else if (!date && lower.includes('tomorrow afternoon')) {
         date = 'Tomorrow';
         time = 'Afternoon (02:00 PM)';
-    } else if (lower.includes('tomorrow evening')) {
+    } else if (!date && lower.includes('tomorrow evening')) {
         date = 'Tomorrow';
         time = 'Evening (05:00 PM)';
-    } else if (lower.includes('this morning')) {
+    } else if (!date && lower.includes('this morning')) {
         date = 'Today';
         time = 'Morning (10:00 AM)';
-    } else if (lower.includes('this afternoon')) {
+    } else if (!date && lower.includes('this afternoon')) {
         date = 'Today';
         time = 'Afternoon (02:00 PM)';
-    } else if (lower.includes('this evening')) {
+    } else if (!date && lower.includes('this evening')) {
         date = 'Today';
         time = 'Evening (05:00 PM)';
-    } else if (lower.includes('tonight') || lower.includes('this night')) {
+    } else if (!date && (lower.includes('tonight') || lower.includes('this night'))) {
         date = 'Today';
         time = 'Night (08:00 PM)';
-    } else if (lower.includes('next monday') || lower.includes('next week monday')) {
+    } else if (!date && (lower.includes('next monday') || lower.includes('next week monday'))) {
         date = 'Next Monday';
-    } else if (lower.includes('saturday') || lower.includes('shanivara')) {
+    } else if (!date && (lower.includes('saturday') || lower.includes('shanivara'))) {
         date = 'Saturday';
-    } else if (lower.includes('sunday') || lower.includes('bhanuvara')) {
+    } else if (!date && (lower.includes('sunday') || lower.includes('bhanuvara'))) {
         date = 'Sunday';
-    } else if (lower.includes('monday') || lower.includes('somavara')) {
+    } else if (!date && (lower.includes('monday') || lower.includes('somavara'))) {
         date = 'Monday';
-    } else if (/\b(tom|tmrw|tomorrow|tomorrow\s+tomorrow|naale|ನಾಳೆ|kal)\b/i.test(lower)) {
+    } else if (!date && /\b(tom|tmrw|tomorrow|tomorrow\s+tomorrow|naale|ನಾಳೆ|kal)\b/i.test(lower)) {
         date = 'Tomorrow';
-    } else if (/\b(today|today\s+today|now|immediately|urgent|ivathu|ಇವತ್ತು|aaj)\b/i.test(lower)) {
+    } else if (!date && /\b(today|today\s+today|now|immediately|urgent|ivathu|ಇವತ್ತು|aaj)\b/i.test(lower)) {
         date = 'Today';
         if (lower.includes('now') || lower.includes('immediately') || lower.includes('urgent')) {
             time = 'Immediate';
@@ -1794,6 +1862,47 @@ function extractAvailabilityDate(text) {
     if (dt && dt.date) return dt.date;
 
     const lower = text.toLowerCase();
+    const explicitDate = (() => {
+        const normalized = lower.replace(/\bof\b/g, ' ').replace(/,/g, ' ').replace(/\s+/g, ' ').trim();
+        const monthLookup = {
+            january: 'January', jan: 'January',
+            february: 'February', feb: 'February',
+            march: 'March', mar: 'March',
+            april: 'April', apr: 'April',
+            may: 'May',
+            june: 'June', jun: 'June',
+            july: 'July', jul: 'July',
+            august: 'August', aug: 'August',
+            september: 'September', sept: 'September', sep: 'September',
+            october: 'October', oct: 'October',
+            november: 'November', nov: 'November',
+            december: 'December', dec: 'December'
+        };
+        const ordinalSuffix = n => {
+            const mod100 = n % 100;
+            if (mod100 >= 11 && mod100 <= 13) return 'th';
+            switch (n % 10) {
+                case 1: return 'st';
+                case 2: return 'nd';
+                case 3: return 'rd';
+                default: return 'th';
+            }
+        };
+        const formatLabel = (day, month, year = null) => year ? `${day}${ordinalSuffix(day)} ${month} ${year}` : `${day}${ordinalSuffix(day)} ${month}`;
+        const dayFirst = normalized.match(/\b(\d{1,2})(?:st|nd|rd|th)?\s+([a-z]+)(?:\s+(\d{4}))?\b/i);
+        if (dayFirst) {
+            const month = monthLookup[dayFirst[2].toLowerCase()];
+            if (month) return formatLabel(Number(dayFirst[1]), month, dayFirst[3] || null);
+        }
+        const monthFirst = normalized.match(/\b([a-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s+(\d{4}))?\b/i);
+        if (monthFirst) {
+            const month = monthLookup[monthFirst[1].toLowerCase()];
+            if (month) return formatLabel(Number(monthFirst[2]), month, monthFirst[3] || null);
+        }
+        return null;
+    })();
+    if (explicitDate) return explicitDate;
+
     if (text.includes('कल') || text.includes('ನಾಳೆ')) return 'Tomorrow';
     if (text.includes('आज') || text.includes('ಇಂದು')) return 'Today';
     const dateMatch = lower.match(/\b(tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday|tom|tmrw|naale|ivathu)\b/i);
@@ -1806,6 +1915,40 @@ function extractAvailabilityDate(text) {
     const isoMatch = text.match(/\b(\d{4}-\d{2}-\d{2})\b/);
     if (isoMatch) return isoMatch[1];
     return null;
+}
+
+function extractWeekdays(text) {
+    if (!text) return [];
+    const lower = text.toLowerCase();
+
+    if (/\b(?:every\s+day|daily|each\s+day|all\s+days)\b/i.test(lower)) return [0, 1, 2, 3, 4, 5, 6];
+    if (/\b(?:weekend|weekends)\b/i.test(lower)) return [0, 6];
+    if (/\b(?:weekday|weekdays)\b/i.test(lower)) return [1, 2, 3, 4, 5];
+
+    const map = [
+        [/\b(?:sunday|sun)\b/i, 0],
+        [/\b(?:monday|mon)\b/i, 1],
+        [/\b(?:tuesday|tue|tues)\b/i, 2],
+        [/\b(?:wednesday|wed)\b/i, 3],
+        [/\b(?:thursday|thu|thur|thurs)\b/i, 4],
+        [/\b(?:friday|fri)\b/i, 5],
+        [/\b(?:saturday|sat)\b/i, 6]
+    ];
+
+    const out = [];
+    for (const [regex, day] of map) {
+        if (regex.test(lower) && !out.includes(day)) out.push(day);
+    }
+    return out;
+}
+
+function formatAvailabilityPatternLabel(pattern, date, daysOfWeek = []) {
+    const weekdayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    if (pattern === 'daily') return 'every day';
+    if (pattern === 'weekly' && Array.isArray(daysOfWeek) && daysOfWeek.length) {
+        return `every ${daysOfWeek.map(d => weekdayNames[d]).filter(Boolean).join(', ')}`;
+    }
+    return date || 'Today';
 }
 
 // Helper to extract caller's name from natural utterances
@@ -1910,6 +2053,11 @@ function localizeCustomerFallback(message, language) {
             ? `${body} ಪರಿಶೀಲಿತ ತಜ್ಞರಲ್ಲಿ ಯಾರನ್ನಾದರೂ ಬುಕ್ ಮಾಡಬೇಕೇ?`
             : `${body} सत्यापित विशेषज्ञों में से किसी को बुक करूँ?`;
     }
+    if (/^No verified specialists are available/i.test(message)) {
+        return language === 'KN'
+            ? 'ಆ ಸಮಯಕ್ಕೆ ಯಾವುದೇ ಪರಿಶೀಲಿತ ತಜ್ಞರು ಲಭ್ಯವಿಲ್ಲ. ಬೇರೆ ಸಮಯ ಪ್ರಯತ್ನಿಸಬೇಕೇ?'
+            : 'उस समय के लिए कोई सत्यापित विशेषज्ञ उपलब्ध नहीं है। क्या आप कोई और समय आज़माना चाहेंगे?';
+    }
     if (/^Just to confirm: you want to book /i.test(message) || /^Just to confirm: you want /i.test(message)) {
         const body = message.replace(/^Just to confirm:\s*/i, '').replace(/Shall I go ahead and book this\?$/i, '').trim();
         return language === 'KN' ? `ದೃಢೀಕರಿಸಿ: ${body}. ಇದನ್ನು ಬುಕ್ ಮಾಡಬೇಕೇ?` : `पुष्टि करें: ${body}। इसे बुक करूँ?`;
@@ -1951,6 +2099,11 @@ function localizedWorkerProfile(worker, language) {
     if (language === 'KN') return `ನಿಮ್ಮ ಪ್ರೊಫೈಲ್ ವಿವರಗಳು: ಹೆಸರು ${name}, ಕೆಲಸ ${trade}, ಫೋನ್ ${phone}, ಸ್ಥಳ ${city}${area ? `, ${area}` : ''}, ಆರಂಭಿಕ ಬೆಲೆ ${price}.`;
     if (language === 'HN') return `आपकी प्रोफ़ाइल जानकारी: नाम ${name}, काम ${trade}, फोन ${phone}, स्थान ${city}${area ? `, ${area}` : ''}, शुरुआती कीमत ${price}।`;
     return `Your profile details are: name ${name}, trade ${trade}, phone ${phone}, location ${city}${area ? `, ${area}` : ''}, and starting price ${price}.`;
+}
+
+function getAvailableWorkersForSlot(workers = [], requestedDate = null, requestedTime = null, requestedEndTime = null) {
+    if (!requestedDate || !requestedTime) return workers;
+    return workers.filter(w => DB.checkScheduleConflict(w.id, requestedDate, requestedTime, requestedEndTime) === null);
 }
 
 function workerPrompt(session, key, english) {
@@ -2345,6 +2498,21 @@ async function processCustomerTurn(session, text, actionsPerformed) {
             };
         }
 
+        const bookingDescription = booking => {
+            const workerInfo = booking.worker_name ? `with ${booking.worker_name}` : 'broadcasting to nearby verified specialists';
+            return `${booking.service} (Job #${booking.id}) on ${booking.requested_date} at ${booking.requested_time} ${workerInfo}, status ${booking.status}`;
+        };
+        if (active.length > 1) {
+            const shown = active.slice(0, 3).map(bookingDescription).join('; ');
+            const remaining = active.length > 3 ? ` Check your dashboard for the other ${active.length - 3} bookings.` : ' Check your dashboard for all of them.';
+            return {
+                spokenResponse: `You have ${active.length} active bookings: ${shown}.${remaining}`,
+                detectedIntent: 'customer_bookings_active',
+                toolExecuted: 'getCustomerBookings',
+                toolResult: { count: active.length, bookings: active }
+            };
+        }
+
         const b = active[0];
         const workerInfo = b.worker_name ? `with ${b.worker_name}` : 'broadcasting to nearby verified specialists';
         return {
@@ -2397,22 +2565,46 @@ async function processCustomerTurn(session, text, actionsPerformed) {
                 pb.price = namedWorker.price || pb.price;
             }
             const activePhone = customerPhone || extractPhoneNumber(text) || pb.customer_phone || '9876543210';
-            const newJob = DB.createJob({
+            if (!pb.workerId) {
+                const availableWorkers = getAvailableWorkersForSlot(DB.getAllWorkers({ city, service: pb.service }) || [], pb.date, pb.time, pb.requested_end_time);
+                if (availableWorkers.length === 0) {
+                    draft.awaiting_booking_confirmation = false;
+                    draft.pending_booking = null;
+                    return {
+                        spokenResponse: `No verified specialists are available in ${city} for ${pb.date} at ${pb.time}. Would you like to try another time?`,
+                        detectedIntent: 'booking_conflict_no_availability'
+                    };
+                }
+            }
+            const createResult = await AI_TOOLS.createJob({
                 customer_id: session.customerId || null,
                 customer_phone: activePhone,
                 customer_name: customerName,
-                worker_id: pb.workerId,
-                worker_name: pb.workerName || `Finding verified ${pb.service}s...`,
-                worker_phone: pb.workerPhone,
+                workerId: pb.workerId,
+                workerName: pb.workerName || `Finding verified ${pb.service}s...`,
+                workerPhone: pb.workerPhone,
                 service: pb.service,
                 problem_description: `Service request for ${pb.service} booked via GigSync AI.`,
                 location: 'Town Area',
                 city,
-                requested_date: pb.date,
-                requested_time: pb.time,
+                requestedDate: pb.date,
+                requestedTime: pb.time,
+                requestedEndTime: pb.requested_end_time || null,
                 budget: `₹${pb.price}`,
                 status: pb.workerId ? 'Confirmed' : 'Requested'
             });
+
+            if (createResult.status === 'conflict') {
+                draft.awaiting_booking_confirmation = false;
+                draft.pending_booking = null;
+                return {
+                    spokenResponse: createResult.message || `No verified specialists are available in ${city} for ${pb.date} at ${pb.time}. Would you like to try another time?`,
+                    detectedIntent: 'booking_conflict_no_availability',
+                    toolExecuted: 'createJob',
+                    toolResult: createResult
+                };
+            }
+            const newJob = createResult.job;
 
             actionsPerformed.push(`Confirmed and created Job #${newJob.id} for customer ${activePhone}`);
             draft.awaiting_booking_confirmation = false;
@@ -2447,13 +2639,13 @@ async function processCustomerTurn(session, text, actionsPerformed) {
 
     // Complete a previously captured start time with the end time supplied on
     // the next turn. A single time is never treated as a full booking slot.
-    if (draft.awaiting_booking_end && extractedTime) {
-        const pendingStart = draft.pending_booking_start;
-        const end = extractedTime.endTime || extractedTime.startTime;
-        extractedTime = { startTime: pendingStart.startTime, endTime: end, startDisplay: pendingStart.startDisplay, endDisplay: extractedTime.endDisplay || extractedTime.startDisplay };
-        draft.awaiting_booking_end = false;
-        draft.pending_booking_start = null;
-    }
+        if (draft.awaiting_booking_end && extractedTime) {
+            const pendingStart = draft.pending_booking_start;
+            const end = extractedTime.endTime || extractedTime.startTime;
+            extractedTime = { startTime: pendingStart.startTime, endTime: end, startDisplay: pendingStart.startDisplay, endDisplay: extractedTime.endDisplay || extractedTime.startDisplay };
+            draft.awaiting_booking_end = false;
+            draft.pending_booking_start = null;
+        }
 
     // Check if customer mentions a specific worker's name
     const allWorkers = DB.getAllWorkers({ city }) || [];
@@ -2483,9 +2675,9 @@ async function processCustomerTurn(session, text, actionsPerformed) {
             draft.pending_booking_start = { startTime: extractedTime.startTime, startDisplay: extractedTime.startDisplay };
             draft.service = service;
             draft.date = date;
-            draft.workerId = targetWorker ? targetWorker.id : null;
-            draft.workerName = targetWorker ? targetWorker.name : null;
-            draft.workerPhone = targetWorker ? targetWorker.phone : null;
+            draft.workerId = targetWorker ? targetWorker.id : (draft.workerId || null);
+            draft.workerName = targetWorker ? targetWorker.name : (draft.workerName || null);
+            draft.workerPhone = targetWorker ? targetWorker.phone : (draft.workerPhone || null);
             return { spokenResponse: session.language === 'KN' ? `ಪ್ರಾರಂಭ ಸಮಯ ${extractedTime.startDisplay}. ಯಾವ ಸಮಯದವರೆಗೆ ಲಭ್ಯವಿರುತ್ತಾರೆ?` : session.language === 'HN' ? `शुरू का समय ${extractedTime.startDisplay} है। समाप्ति का समय क्या होगा?` : `The start time is ${extractedTime.startDisplay}. What is the end time?`, detectedIntent: 'ask_booking_end_time' };
         }
         const time = extractedTime
@@ -2493,6 +2685,9 @@ async function processCustomerTurn(session, text, actionsPerformed) {
                 ? `${extractedTime.startDisplay || extractedTime.startTime} to ${extractedTime.endDisplay || extractedTime.endTime}`
                 : (extractedTime.startDisplay || extractedTime.startTime))
             : draft.time;
+        const requestedEndTime = extractedTime && extractedTime.endTime && extractedTime.endTime !== extractedTime.startTime
+            ? extractedTime.endTime
+            : (draft.pending_booking && draft.pending_booking.requested_end_time) || null;
         const workerId = targetWorker ? targetWorker.id : (draft.workerId || null);
         const workerName = targetWorker ? targetWorker.name : (draft.workerName || null);
         const workerPhone = targetWorker ? targetWorker.phone : (draft.workerPhone || null);
@@ -2503,26 +2698,43 @@ async function processCustomerTurn(session, text, actionsPerformed) {
         // caller to say “book Ramu” and bind that exact database record.
         if (!workerId) {
             const matchingWorkers = DB.getAllWorkers({ city, service }) || [];
-            if (matchingWorkers.length > 0) {
-                const topWorkers = matchingWorkers.slice(0, 3);
+            const availableWorkers = getAvailableWorkersForSlot(matchingWorkers, date, time, requestedEndTime);
+            if (availableWorkers.length > 0) {
+                const topWorkers = availableWorkers.slice(0, 3);
                 const descriptions = topWorkers.map(w => `${w.name} (${w.trade}, ★${w.rating || 5.0}, ₹${w.price || 300})`).join(', ');
+                const slotLabel = date && time ? ` for ${date} at ${time}` : '';
                 draft.pending_booking = {
                     service, date, time, workerId: null, workerName: null,
-                    workerPhone: null, price, customer_phone: customerPhone || '9876543210'
+                    workerPhone: null, price, customer_phone: customerPhone || '9876543210',
+                    requested_end_time: requestedEndTime
                 };
                 draft.awaiting_booking_confirmation = true;
                 return {
-                    spokenResponse: `We have verified specialists in ${city}: ${descriptions}. Would you like me to book one for you?`,
+                    spokenResponse: `We have verified specialists in ${city}${slotLabel}: ${descriptions}. Would you like me to book one for you?`,
                     detectedIntent: 'find_workers_for_booking',
                     toolExecuted: 'findWorkers',
-                    toolResult: { count: matchingWorkers.length, workers: topWorkers }
+                    toolResult: { count: availableWorkers.length, workers: topWorkers }
+                };
+            } else if (date && time) {
+                draft.awaiting_booking_confirmation = false;
+                draft.pending_booking = null;
+                return {
+                    spokenResponse: `No verified specialists are available in ${city} for ${date} at ${time}. Would you like to try another time?`,
+                    detectedIntent: 'find_workers_empty'
                 };
             }
         }
 
         // If direct booking with worker, run conflict check
         if (workerId) {
-            const conflict = DB.checkScheduleConflict(workerId, date, time);
+            const workerAvailabilityForDate = DB.getWorkerAvailability(workerId, date) || [];
+            if (workerAvailabilityForDate.length === 0) {
+                return {
+                    spokenResponse: `${workerName} has not set working hours for ${date}. Would you like to pick another date or see other available ${service}s?`,
+                    detectedIntent: 'booking_conflict_not_available'
+                };
+            }
+            const conflict = DB.checkScheduleConflict(workerId, date, time, requestedEndTime);
             if (conflict === 'NotAvailable') {
                 return {
                     spokenResponse: `${workerName} has not set working hours for ${date}. Would you like to pick another date or see other available ${service}s?`,
@@ -2546,6 +2758,7 @@ async function processCustomerTurn(session, text, actionsPerformed) {
             service,
             date,
             time,
+            requested_end_time: requestedEndTime,
             workerId,
             workerName,
             workerPhone,
@@ -2585,25 +2798,37 @@ async function processCustomerTurn(session, text, actionsPerformed) {
         if (/\b(lower price|lowest price|cheapest|cheaper|budget|कम कीमत|सस्ता|ಕಡಿಮೆ ಬೆಲೆ|ಅಗ್ಗ)\b/iu.test(lower)) {
             matchingWorkers = matchingWorkers.slice().sort((a, b) => Number(a.price || 0) - Number(b.price || 0));
         }
-        actionsPerformed.push(`Searched specialists for trade '${trade}' in '${city}': ${matchingWorkers.length} found`);
+        const discoveryDate = extractedDate || draft.date;
+        const discoveryTime = extractedTime
+            ? (extractedTime.startTime !== extractedTime.endTime
+                ? `${extractedTime.startDisplay || extractedTime.startTime} to ${extractedTime.endDisplay || extractedTime.endTime}`
+                : (extractedTime.startDisplay || extractedTime.startTime))
+            : draft.time;
+        const discoveryEndTime = extractedTime && extractedTime.endTime && extractedTime.endTime !== extractedTime.startTime
+            ? extractedTime.endTime
+            : null;
+        const availableWorkers = getAvailableWorkersForSlot(matchingWorkers, discoveryDate, discoveryTime, discoveryEndTime);
+        actionsPerformed.push(`Searched specialists for trade '${trade}' in '${city}': ${availableWorkers.length} available`);
 
-        if (matchingWorkers.length === 0) {
+        if (availableWorkers.length === 0) {
             return {
                 spokenResponse: trade
-                    ? `I couldn't find any verified ${trade}s currently registered in ${city}. Would you like to check nearby areas?`
-                    : `No verified specialists found in ${city} right now. What type of service do you need?`,
+                    ? `No verified ${trade}s are available in ${city} for that time. Would you like to try another time?`
+                    : `No verified specialists are available in ${city} for that time. Would you like to try another time?`,
                 detectedIntent: 'find_workers_empty'
             };
         }
 
-        const topWorkers = matchingWorkers.slice(0, 3);
+        const topWorkers = availableWorkers.slice(0, 3);
         const descriptions = topWorkers.map(w => `${w.name} (${w.trade}, ★${w.rating || 5.0}, ₹${w.price || 300})`).join(', ');
+        const slotDate = discoveryDate || null;
+        const slotLabel = slotDate && discoveryTime ? ` for ${slotDate} at ${discoveryTime}` : '';
 
         return {
-            spokenResponse: `We have verified specialists in ${city}: ${descriptions}. Would you like me to book one for you?`,
+            spokenResponse: `We have verified specialists in ${city}${slotLabel}: ${descriptions}. Would you like me to book one for you?`,
             detectedIntent: 'find_workers',
             toolExecuted: 'findWorkers',
-            toolResult: { count: matchingWorkers.length, workers: topWorkers }
+            toolResult: { count: availableWorkers.length, workers: topWorkers }
         };
     }
 
@@ -2719,7 +2944,9 @@ async function processWorkerTurn(session, text, actionsPerformed) {
         const worker = phone ? DB.getWorkerByPhone(phone) : null;
         const trade = draft.job_role || (worker ? worker.trade : null);
         const city = session.city || (worker ? worker.city : 'Ramanagara');
-        const opps = DB.getAvailableJobsForWorker(trade, city) || [];
+        const opps = (DB.getAvailableJobsForWorker(trade, city) || []).filter(job =>
+            !worker || DB.checkScheduleConflict(worker.id, job.requested_date, job.requested_time, job.requested_end_time) !== 'JobConflict'
+        );
         if (opps.length === 0) {
             return {
                 spokenResponse: trade ? `There are currently no new open job requests for ${trade} in ${city}.` : `There are no new open job requests in ${city} right now.`,
@@ -2728,9 +2955,13 @@ async function processWorkerTurn(session, text, actionsPerformed) {
                 toolResult: { count: 0 }
             };
         } else {
-            const first = opps[0];
+            const visible = opps.slice(0, 3);
+            const descriptions = visible.map(job => `${job.service} in ${job.location || city} on ${job.requested_date} (${job.budget || '₹300'})`).join('; ');
+            const more = opps.length > visible.length
+                ? ` There are ${opps.length - visible.length} more; please check your dashboard for the rest.`
+                : ' You can also check your dashboard for all open requests.';
             return {
-                spokenResponse: `There is an open request for ${first.service} in ${first.location || city} on ${first.requested_date} (${first.budget || '₹300'}).`,
+                spokenResponse: `There ${opps.length === 1 ? 'is' : 'are'} ${opps.length} open request${opps.length === 1 ? '' : 's'}: ${descriptions}.${more}`,
                 detectedIntent: 'available_job_requests',
                 toolExecuted: 'getAvailableJobRequests',
                 toolResult: { count: opps.length, opportunities: opps }
@@ -2825,7 +3056,7 @@ async function processWorkerTurn(session, text, actionsPerformed) {
 
             for (const targetJob of processList) {
                 // Schedule Conflict Check: Check if worker already has a booking at this requested date & time
-                const conflict = DB.checkScheduleConflict(worker.id, targetJob.requested_date, targetJob.requested_time);
+                const conflict = DB.checkScheduleConflict(worker.id, targetJob.requested_date, targetJob.requested_time, targetJob.requested_end_time);
                 if (conflict === 'JobConflict') {
                     clashingJobs.push(targetJob);
                     actionsPerformed.push(`Skipped Job #${targetJob.id} (${targetJob.requested_time}) due to schedule conflict for worker ${worker.name}`);
@@ -2959,13 +3190,18 @@ async function processWorkerTurn(session, text, actionsPerformed) {
             const saveRes = DB.setWorkerAvailabilitySlot({
                 workerId: worker.id, workerPhone: worker.phone, trade: worker.trade,
                 dateStr: pending.date, startTime: pending.startTime, endTime: pending.endTime,
-                isAvailable: true, pattern: pending.pattern || 'once'
+                isAvailable: true,
+                pattern: pending.pattern || 'once',
+                daysOfWeek: pending.daysOfWeek || [],
+                rangeStart: pending.rangeStart || pending.date,
+                rangeEnd: pending.rangeEnd || null
             });
             draft.awaiting_availability_confirmation = false;
             draft.pending_availability = null;
             actionsPerformed.push(`Updated availability for worker ${worker.name}: ${pending.date} ${pending.startTime}-${pending.endTime}`);
+            const savedLabel = formatAvailabilityPatternLabel(pending.pattern || 'once', pending.rangeStart || pending.date, pending.daysOfWeek || []);
             return {
-                spokenResponse: `Done. Your availability has been updated for ${pending.date} from ${pending.startDisplay} to ${pending.endDisplay}.`,
+                spokenResponse: `Done. Your availability has been updated for ${savedLabel} from ${pending.startDisplay} to ${pending.endDisplay}.`,
                 detectedIntent: 'update_availability', toolExecuted: 'updateWorkerAvailability', toolResult: saveRes
             };
         }
@@ -3046,19 +3282,36 @@ async function processWorkerTurn(session, text, actionsPerformed) {
     const extractedTime = extractTimeWindow(text);
     const extractedDate = extractAvailabilityDate(text) || (lower.includes('tomorrow') ? 'Tomorrow' : (lower.includes('today') ? 'Today' : null));
     const dailyAvailability = /(?:\bdaily\b|\bevery day\b|\beach day\b|रोज|हर दिन|प्रतिदिन|ಪ್ರತಿ ದಿನ|ಪ್ರತಿದಿನ)/iu.test(text);
+    const weeklyAvailability = /(?:\bweekly\b|\bevery week\b|\beach week\b|\bweekdays?\b|\bweekend(s)?\b|monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|wed|thu|fri|sat|sun)/iu.test(text);
+    const weekdayNumbers = weeklyAvailability ? extractWeekdays(text) : [];
+    const pattern = dailyAvailability ? 'daily' : (weeklyAvailability ? 'weekly' : 'once');
+    const weekdayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const isWeekdayLabel = value => {
+        const lowerValue = String(value || '').toLowerCase();
+        return ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sun', 'mon', 'tue', 'tues', 'wed', 'thu', 'thur', 'thurs', 'fri', 'sat']
+            .includes(lowerValue);
+    };
 
-    if (existingWorker && (extractedTime || extractedDate || draft.pending_availability)) {
+    if (existingWorker && (extractedTime || extractedDate || draft.pending_availability || dailyAvailability || weeklyAvailability)) {
         // An explicit new availability statement replaces an abandoned draft
         // from an earlier turn/session; it is never interpreted as its end.
         const startsNewAvailability = /\b(available|availability|working hours|work from)\b/i.test(lower);
         const pending = startsNewAvailability ? {} : (draft.pending_availability || {});
         if (startsNewAvailability) draft.pending_availability = null;
-        // A daily pattern needs a concrete range start for expansion; Today is
-        // the anchor while pattern='daily' makes it recur on future dates.
-        const dateStr = dailyAvailability ? 'Today' : (extractedDate || pending.date || 'Tomorrow');
+        // Recurring patterns need a concrete range start for expansion; Today is
+        // the default anchor while pattern='daily' or pattern='weekly' makes it recur.
+        const recurringStart = pattern === 'weekly' && extractedDate && isWeekdayLabel(extractedDate)
+            ? (pending.date || 'Today')
+            : (extractedDate || pending.date || 'Today');
+        const dateStr = recurringStart;
 
         if (!extractedTime) {
-            draft.pending_availability = { ...pending, date: dateStr };
+            if (pattern === 'weekly' && weekdayNumbers.length === 0 && !(pending.daysOfWeek && pending.daysOfWeek.length)) {
+                draft.pending_availability = { ...pending, date: dateStr, pattern };
+                draft.last_asked_field = 'availability_days';
+                return { spokenResponse: 'Which day or days of the week should I save this for?', detectedIntent: 'ask_availability_days' };
+            }
+            draft.pending_availability = { ...pending, date: dateStr, pattern, daysOfWeek: weekdayNumbers.length ? weekdayNumbers : (pending.daysOfWeek || []) };
             draft.last_asked_field = 'availability_start';
             return { spokenResponse: 'What time will you start being available?', detectedIntent: 'ask_availability_start' };
         }
@@ -3067,9 +3320,17 @@ async function processWorkerTurn(session, text, actionsPerformed) {
         // not an availability range. Preserve it and ask only for the end.
         if (extractedTime.startTime === extractedTime.endTime && !pending.startTime) {
             draft.pending_availability = {
-                date: dateStr, pattern: dailyAvailability ? 'daily' : 'once', startTime: extractedTime.startTime, startDisplay: extractedTime.startDisplay
+                date: dateStr,
+                pattern,
+                daysOfWeek: weekdayNumbers,
+                startTime: extractedTime.startTime,
+                startDisplay: extractedTime.startDisplay
             };
             draft.last_asked_field = 'availability_end';
+            if (pattern === 'weekly' && weekdayNumbers.length === 0) {
+                draft.last_asked_field = 'availability_days';
+                return { spokenResponse: 'Which day or days of the week should I save this for?', detectedIntent: 'ask_availability_days' };
+            }
             return { spokenResponse: `You will start at ${extractedTime.startDisplay}. Until what time will you be available?`, detectedIntent: 'ask_availability_end' };
         }
 
@@ -3077,11 +3338,31 @@ async function processWorkerTurn(session, text, actionsPerformed) {
         const startDisplay = pending.startDisplay || extractedTime.startDisplay;
         const endTime = pending.startTime ? extractedTime.startTime : extractedTime.endTime;
         const endDisplay = pending.startTime ? extractedTime.startDisplay : extractedTime.endDisplay;
-        draft.pending_availability = { date: dateStr, pattern: dailyAvailability ? 'daily' : 'once', startTime, endTime, startDisplay, endDisplay };
+        if (pattern === 'weekly' && weekdayNumbers.length === 0 && !(pending.daysOfWeek && pending.daysOfWeek.length)) {
+            draft.pending_availability = { date: dateStr, pattern, startTime, endTime, startDisplay, endDisplay };
+            draft.last_asked_field = 'availability_days';
+            return { spokenResponse: 'Which day or days of the week should I save this for?', detectedIntent: 'ask_availability_days' };
+        }
+        draft.pending_availability = {
+            date: dateStr,
+            pattern,
+            daysOfWeek: weekdayNumbers.length ? weekdayNumbers : (pending.daysOfWeek || []),
+            rangeStart: dateStr,
+            startTime,
+            endTime,
+            startDisplay,
+            endDisplay
+        };
         draft.awaiting_availability_confirmation = true;
         draft.last_asked_field = 'availability_confirmation';
+        const effectiveDays = weekdayNumbers.length ? weekdayNumbers : (pending.daysOfWeek || []);
+        const scheduleLabel = pattern === 'daily'
+            ? 'every day'
+            : pattern === 'weekly' && effectiveDays.length
+                ? `every ${effectiveDays.map(d => weekdayNames[d]).join(', ')}`
+                : dateStr;
         return {
-            spokenResponse: `Just to confirm: you are available ${dateStr} from ${startDisplay} to ${endDisplay}. Shall I save this?`,
+            spokenResponse: `Just to confirm: you are available ${scheduleLabel} from ${startDisplay} to ${endDisplay}. Shall I save this?`,
             detectedIntent: 'ask_availability_confirmation'
         };
     }

@@ -12,6 +12,7 @@ const DB = require('./database');
 const FirebaseSync = require('./firebase');
 const { aiAgent, AI_TOOLS, sessionManager } = require('./ai_agent');
 const { authorizeJobMutation, workerForSession, samePhone } = require('./job_policy');
+const { resolveTtsLanguage } = require('./tts');
 
 const PORT = 8089;
 const PUBLIC_DIR = path.join(__dirname, '..');
@@ -825,10 +826,7 @@ const server = http.createServer(async (req, res) => {
             return sendJSON(res, { status: 'error', message: 'Text is required for TTS' }, 400);
         }
 
-        const requestedLang = String(lang || 'en-IN').toLowerCase();
-        const isKannada = /[\u0C80-\u0CFF]/.test(text);
-        const isHindi = /[\u0900-\u097F]/.test(text);
-        const targetLang = isKannada ? 'kn' : (isHindi ? 'hi' : (requestedLang.startsWith('kn') ? 'kn' : requestedLang.startsWith('hi') ? 'hi' : 'en')); 
+        const targetLang = resolveTtsLanguage(text, lang);
         const ttsUrl = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(text.slice(0, 200))}&tl=${targetLang}&client=tw-ob`;
 
         const https = require('node:https');

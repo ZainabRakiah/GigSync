@@ -16,6 +16,7 @@ const path = require('node:path');
 process.env.GIGSYNC_DB_PATH = path.join(require('node:os').tmpdir(), `gigsync-regression-${process.pid}.db`);
 try { require('node:fs').unlinkSync(process.env.GIGSYNC_DB_PATH); } catch (e) {}
 const DB     = require('../backend/database');
+const { resolveTtsLanguage } = require('../backend/tts');
 const assert = require('assert');
 
 console.log('=========================================');
@@ -380,6 +381,13 @@ await test('Phase 0.5-C — Serverless handler api/index.js handles reset-sessio
     await apiHandler(mockReq, mockRes);
     assert.strictEqual(mockRes.statusCode, 200);
     assert.ok(responseData && responseData.status === 'success');
+});
+
+await test('Phase 0.5-C — TTS keeps English for mixed-script English responses', () => {
+    const mixed = 'We have verified specialists in Ramanagara for Tomorrow at 9 AM to 4 PM: ಏನ ಏನ ಬದಲಲ (Tailoring & Alterations, ★5, ₹300).';
+    assert.strictEqual(resolveTtsLanguage(mixed, 'en-IN'), 'en', 'English should win when the UI requested English');
+    assert.strictEqual(resolveTtsLanguage(mixed, 'kn-IN'), 'kn', 'Explicit Kannada should still win');
+    assert.strictEqual(resolveTtsLanguage('ನಾಳೆ ಬೆಳಗ್ಗೆ 9 ರಿಂದ 4 ರವರೆಗೆ ಬುಕಿಂಗ್ ಇದೆ', ''), 'kn', 'Fallback detection should still recognize clear Kannada text');
 });
 
 await test('Phase 0.5-D — Customer Chatbot handles specialist discovery without worker hallucination', async () => {

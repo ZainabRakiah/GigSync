@@ -8,6 +8,7 @@ const FirebaseSync = require('../backend/firebase');
 const { aiAgent, AI_TOOLS, sessionManager } = require('../backend/ai_agent');
 const { resolveAiCaller, getAuthSession } = require('../backend/caller_identity');
 const { authorizeJobMutation, workerForSession, samePhone } = require('../backend/job_policy');
+const { resolveTtsLanguage } = require('../backend/tts');
 
 function parseBody(req) {
     return new Promise((resolve) => {
@@ -789,10 +790,7 @@ module.exports = async (req, res) => {
             return sendJSON(res, { status: 'error', message: 'Text is required for TTS' }, 400);
         }
 
-        const requestedLang = String(lang || 'en-IN').toLowerCase();
-        const isKannada = /[\u0C80-\u0CFF]/.test(text);
-        const isHindi = /[\u0900-\u097F]/.test(text);
-        const targetLang = isKannada ? 'kn' : (isHindi ? 'hi' : (requestedLang.startsWith('kn') ? 'kn' : requestedLang.startsWith('hi') ? 'hi' : 'en'));
+        const targetLang = resolveTtsLanguage(text, lang);
         const ttsUrl = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(text.slice(0, 200))}&tl=${targetLang}&client=tw-ob`;
 
         try {

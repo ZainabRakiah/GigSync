@@ -27,6 +27,7 @@ if (fs.existsSync(envPath)) {
 
 const { GoogleGenAI } = require('@google/genai');
 const DB = require('./database');
+const { translateResponseIfRequired } = require('./translation');
 
 // ======================================================================
 // 0. SHARED HELPERS FOR REAL-DATA TOOLS
@@ -1768,6 +1769,20 @@ function extractDateTimeEntities(text) {
         const suffix = ordinalSuffix(day);
         return year ? `${day}${suffix} ${month} ${year}` : `${day}${suffix} ${month}`;
     };
+    const spokenDayLookup = {
+        first: 1, one: 1, ಫಸ್ಟ್: 1, ಒನ್: 1, ಒಂದು: 1, ಒಂದನೇ: 1,
+        second: 2, two: 2, ಸೆಕೆಂಡ್: 2, ಟು: 2, ಎರಡು: 2, ಎರಡನೇ: 2,
+        third: 3, three: 3, ಥರ್ಡ್: 3, ತ್ರೀ: 3, ಮೂರು: 3, ಮೂರನೇ: 3,
+        fourth: 4, four: 4, ಫೋರ್: 4, ನಾಲ್ಕು: 4, ನಾಲ್ಕನೇ: 4,
+        fifth: 5, five: 5, ಫಿಫ್ತ್: 5, ಫೈವ್: 5, ಐದು: 5, ಐದನೇ: 5,
+        sixth: 6, six: 6, ಸಿಕ್ಸ್: 6, ಆರು: 6, ಆರನೇ: 6,
+        seventh: 7, seven: 7, ಸೆವೆನ್: 7, ಏಳು: 7, ಏಳನೇ: 7,
+        eighth: 8, eight: 8, ಎಯ್ಟ್: 8, ಏಟ್: 8, ಎಂಟು: 8, ಎಂಟನೇ: 8,
+        ninth: 9, nine: 9, ನೈನ್: 9, ನಯನ್: 9, ಒಂಬತ್ತು: 9, ಒಂಬತ್ತನೇ: 9,
+        tenth: 10, ten: 10, ಟೆನ್: 10, ಹತ್ತು: 10, ಹತ್ತನೇ: 10,
+        eleventh: 11, eleven: 11, ಇಲೆವೆನ್: 11, ಹನ್ನೊಂದು: 11, ಹನ್ನೊಂದನೇ: 11,
+        twelfth: 12, twelve: 12, ಟ್ವೆಲ್ವ್: 12, ಹನ್ನೆರಡು: 12, ಹನ್ನೆರಡನೇ: 12
+    };
 
     const explicitDate = (() => {
         const normalized = lower.replace(/\bof\b/g, ' ').replace(/,/g, ' ').replace(/\s+/g, ' ').trim();
@@ -1788,6 +1803,49 @@ function extractDateTimeEntities(text) {
 
     if (explicitDate) {
         date = explicitDate;
+    }
+
+    // Web Speech returns Hindi calendar dates in Devanagari (for example,
+    // "5 सितंबर"). Convert them to the same English label used by the
+    // existing date normalizer so a new explicit date replaces an older
+    // Tomorrow value in the conversation draft.
+    if (!date) {
+        const hindiMonths = {
+            'जनवरी': 'January', 'फरवरी': 'February', 'मार्च': 'March',
+            'अप्रैल': 'April', 'मई': 'May', 'जून': 'June', 'जुलाई': 'July',
+            'अगस्त': 'August', 'सितंबर': 'September', 'सितम्बर': 'September',
+            'अक्टूबर': 'October', 'नवंबर': 'November', 'नवम्बर': 'November',
+            'दिसंबर': 'December', 'दिसम्बर': 'December'
+        };
+        const hindiDate = lower.match(/(\d{1,2})\s*(जनवरी|फरवरी|मार्च|अप्रैल|मई|जून|जुलाई|अगस्त|सितंबर|सितम्बर|अक्टूबर|नवंबर|नवम्बर|दिसंबर|दिसम्बर)(?:\s*(?:को|की तारीख))?/u);
+        if (hindiDate) {
+            const day = Number(hindiDate[1]);
+            const month = hindiMonths[hindiDate[2]];
+            if (day >= 1 && day <= 31 && month) date = formatNaturalDateLabel(day, month);
+        }
+    }
+
+    if (!date) {
+        const kannadaMonths = {
+            'ಜನವರಿ': 'January', 'ಫೆಬ್ರವರಿ': 'February', 'ಮಾರ್ಚ್': 'March',
+            'ಏಪ್ರಿಲ್': 'April', 'ಮೇ': 'May', 'ಜೂನ್': 'June', 'ಜುಲೈ': 'July',
+            'ಆಗಸ್ಟ್': 'August', 'ಸೆಪ್ಟೆಂಬರ್': 'September', 'ಸೆಪ್ಟೆಂಬರ': 'September',
+            'ಅಕ್ಟೋಬರ್': 'October', 'ನವೆಂಬರ್': 'November', 'ಡಿಸೆಂಬರ್': 'December'
+        };
+        const kannadaDate = lower.match(/(\d{1,2})\s*(ಜನವರಿ|ಫೆಬ್ರವರಿ|ಮಾರ್ಚ್|ಏಪ್ರಿಲ್|ಮೇ|ಜೂನ್|ಜುಲೈ|ಆಗಸ್ಟ್|ಸೆಪ್ಟೆಂಬರ್|ಸೆಪ್ಟೆಂಬರ|ಅಕ್ಟೋಬರ್|ನವೆಂಬರ್|ಡಿಸೆಂಬರ್)(?:\s*(?:ಕ್ಕೆ|ಗೆ|ರಂದು))?/u);
+        if (kannadaDate) {
+            const day = Number(kannadaDate[1]);
+            const month = kannadaMonths[kannadaDate[2]];
+            if (day >= 1 && day <= 31 && month) date = formatNaturalDateLabel(day, month);
+        }
+        if (!date) {
+            const spokenKannadaDate = lower.match(/([a-z]+|[\u0C80-\u0CFF]+)\s*(ಜನವರಿ|ಫೆಬ್ರವರಿ|ಮಾರ್ಚ್|ಏಪ್ರಿಲ್|ಮೇ|ಜೂನ್|ಜುಲೈ|ಆಗಸ್ಟ್|ಸೆಪ್ಟೆಂಬರ್|ಸೆಪ್ಟೆಂಬರ|ಅಕ್ಟೋಬರ್|ನವೆಂಬರ್|ಡಿಸೆಂಬರ್)(?:\s*(?:ಕ್ಕೆ|ಗೆ|ರಂದು))?/u);
+            if (spokenKannadaDate) {
+                const day = spokenDayLookup[spokenKannadaDate[1]];
+                const month = kannadaMonths[spokenKannadaDate[2]];
+                if (day >= 1 && day <= 31 && month) date = formatNaturalDateLabel(day, month);
+            }
+        }
     }
 
     // Date Matching with Speech-to-Text Tolerance (tom, tmrw, today today, etc.)
@@ -2063,6 +2121,18 @@ function localizeCustomerFallback(message, language) {
         return language === 'KN' ? `ದೃಢೀಕರಿಸಿ: ${body}. ಇದನ್ನು ಬುಕ್ ಮಾಡಬೇಕೇ?` : `पुष्टि करें: ${body}। इसे बुक करूँ?`;
     }
     if (/^Done! (?:Your booking|Your service request)/i.test(message)) {
+        const booking = message.match(/^Done! Your booking #([A-Z0-9-]+) for (.+?) with (.+?) on (.+?) at (.+?) is confirmed/i);
+        if (booking) {
+            return language === 'KN'
+                ? `ನಿಮ್ಮ ಬುಕಿಂಗ್ #${booking[1]} ದೃಢೀಕರಿಸಲಾಗಿದೆ: ${booking[2]} - ${booking[3]}, ${booking[4]} ${booking[5]}. ವಿವರಗಳು ನಿಮ್ಮ ಡ್ಯಾಶ್‌ಬೋರ್ಡ್‌ನಲ್ಲಿ ಕಾಣಿಸುತ್ತವೆ.`
+                : `आपकी बुकिंग #${booking[1]} कन्फर्म हो गई है: ${booking[2]} - ${booking[3]}, ${booking[4]} ${booking[5]}। विवरण आपके डैशबोर्ड में दिखाई देंगे।`;
+        }
+        const request = message.match(/^Done! Your service request #([A-Z0-9-]+) for (.+?) on (.+?) at (.+?) has been dispatched/i);
+        if (request) {
+            return language === 'KN'
+                ? `ನಿಮ್ಮ ಸೇವಾ ವಿನಂತಿ #${request[1]} ರಚಿಸಲಾಗಿದೆ: ${request[2]}, ${request[3]} ${request[4]}. ವಿವರಗಳು ನಿಮ್ಮ ಡ್ಯಾಶ್‌ಬೋರ್ಡ್‌ನಲ್ಲಿ ಕಾಣಿಸುತ್ತವೆ.`
+                : `आपका सेवा अनुरोध #${request[1]} बन गया है: ${request[2]}, ${request[3]} ${request[4]}। विवरण आपके डैशबोर्ड में दिखाई देंगे।`;
+        }
         return language === 'KN' ? 'ನಿಮ್ಮ ಬುಕಿಂಗ್ ಯಶಸ್ವಿಯಾಗಿ ರಚಿಸಲಾಗಿದೆ. ವಿವರಗಳು ನಿಮ್ಮ ಡ್ಯಾಶ್‌ಬೋರ್ಡ್‌ನಲ್ಲಿ ಕಾಣಿಸುತ್ತವೆ.' : 'आपकी बुकिंग सफलतापूर्वक बन गई है। विवरण आपके डैशबोर्ड में दिखाई देंगे।';
     }
     return message;
@@ -2120,6 +2190,19 @@ function extractTimeRange(text) {
     if (!text) return null;
     let lower = text.toLowerCase()
         // Common speech-to-text Kannada/phonetic number words.
+        .replace(/ಮತ್ತೊಂದು|ಒಂದನೇ|ಒಂದು|ಒನ್|ಫಸ್ಟ್/gu, '1')
+        .replace(/ಎರಡನೇ|ಎರಡು|ಟು|ಟೂ|ಸೆಕೆಂಡ್/gu, '2')
+        .replace(/ಮೂರನೇ|ಮೂರು|ಥರ್ಡ್|ತ್ರೀ/gu, '3')
+        .replace(/ನಾಲ್ಕನೇ|ನಾಲ್ಕು/gu, '4')
+        .replace(/ಐದನೇ|ಐದು|ಫಿಫ್ತ್|ಫೈವ್/gu, '5')
+        .replace(/ಆರನೇ|ಆರು|ಸಿಕ್ಸ್/gu, '6')
+        .replace(/ಏಳನೇ|ಏಳು|ಸೆವೆನ್/gu, '7')
+        .replace(/ಎಂಟನೇ|ಎಂಟು/gu, '8')
+        .replace(/ಒಂಬತ್ತನೇ|ಒಂಬತ್ತು/gu, '9')
+        .replace(/ಹತ್ತಿಂದ|ಟೆನ್ನಿಂದ/gu, '10 ರಿಂದ')
+        .replace(/ಹತ್ತನೇ|ಹತ್ತು/gu, '10')
+        .replace(/ಹನ್ನೊಂದನೇ|ಹನ್ನೊಂದು|ಇಲೆವೆನ್/gu, '11')
+        .replace(/ಹನ್ನೆರಡನೇ|ಹನ್ನೆರಡು|ಟ್ವೆಲ್ವ್/gu, '12')
         .replace(/ನೈನ್|ನಯನ್|ನೈನ/gu, '9')
         .replace(/ಫೋರ್|ಫೋರು/gu, '4')
         .replace(/ಎಯ್ಟ್|ಏಟ್/gu, '8')
@@ -2135,7 +2218,7 @@ function extractTimeRange(text) {
         .replace(/\bo'clock\b/g, '')
         // Hindi and Kannada range connectors, including "9 से 4 बजे तक".
         .replace(/\s*(?:से|तक|ವರೆಗೆ)\s*/gu, ' to ')
-        .replace(/\s*(?:ರಿಂದ|ಇಂದ)\s*/gu, ' to ')
+        .replace(/\s*(?:ರಿಂದ|ಇಂದ|ಯಿಂದ)\s*/gu, ' to ')
         .replace(/\s*बजे\s*/gu, ' ');
 
     // 1. Natural keywords without numbers
@@ -2258,7 +2341,7 @@ function extractTimeWindow(text) {
         return { startTime: `${String(hour).padStart(2, '0')}:00 AM`, endTime: `${String(hour).padStart(2, '0')}:00 AM`, startDisplay: `${hour} AM`, endDisplay: `${hour} AM` };
     }
     // Numeric Kannada/Hindi range spoken without English connectors.
-    const nativeRange = String(text || '').match(/(\d{1,2})(?:\s*(?:ರಿಂದ|ಇಂದ|से|तक|वाजे तक|ವರೆಗೆ)\s*)(\d{1,2})/u);
+    const nativeRange = String(text || '').match(/(\d{1,2}(?::\d{2})?)(?:\s*(?:ರಿಂದ|ಇಂದ|ಯಿಂದ|से|तक|वाजे तक|ವರೆಗೆ)\s*)(\d{1,2}(?::\d{2})?)(?:\s*(?:ಕ್ಕೆ|ಗೆ))?/u);
     if (nativeRange) {
         return extractTimeRange(`${nativeRange[1]} to ${nativeRange[2]}`);
     }
@@ -2701,11 +2784,16 @@ async function processCustomerTurn(session, text, actionsPerformed) {
             const availableWorkers = getAvailableWorkersForSlot(matchingWorkers, date, time, requestedEndTime);
             if (availableWorkers.length > 0) {
                 const topWorkers = availableWorkers.slice(0, 3);
+                const selectedWorker = topWorkers[0];
                 const descriptions = topWorkers.map(w => `${w.name} (${w.trade}, ★${w.rating || 5.0}, ₹${w.price || 300})`).join(', ');
                 const slotLabel = date && time ? ` for ${date} at ${time}` : '';
                 draft.pending_booking = {
-                    service, date, time, workerId: null, workerName: null,
-                    workerPhone: null, price, customer_phone: customerPhone || '9876543210',
+                    service, date, time,
+                    workerId: selectedWorker.id,
+                    workerName: selectedWorker.name,
+                    workerPhone: selectedWorker.phone,
+                    price: selectedWorker.price || price,
+                    customer_phone: customerPhone || '9876543210',
                     requested_end_time: requestedEndTime
                 };
                 draft.awaiting_booking_confirmation = true;
@@ -3665,7 +3753,7 @@ class ContextAwareVoiceAgent {
         const customerTransactionTurn = session.callerRole === 'customer' && (
             /\b(?:book|booking|bookings|hire|schedule|need|find|search|worker|specialist|electrician|plumber|carpenter|mechanic|painter|clean|tomorrow|today|from\s+\d|at\s+\d|show me|near me|cancel)\b/i.test(text)
             || /\d\s*(?:ರಿಂದ|ಇಂದ|ವರೆಗೆ|से|तक|to|till|-)\s*\d/u.test(text)
-            || /(?:ಬುಕ್|ಬುಕಿಂಗ್|ಕೆಲಸಗಾರ|ತಜ್ಞ|ಎಲೆಕ್ಟ್ರಿಷಿಯನ್|ಪ್ಲಂಬರ್|ಕಾರ್ಪೆಂಟರ್|ಮೆಕ್ಯಾನಿಕ್|ಪೇಂಟರ್|ನಾಳೆ|ಇಂದು|ನನ್ನ ಬುಕಿಂಗ್|ಹುಡುಕಿ)/u.test(text)
+            || /(?:ಬುಕ್|ಬುಕಿಂಗ್|ಕೆಲಸಗಾರ|ತಜ್ಞ|ಎಲೆಕ್ಟ್ರಿಷಿಯನ್|ಪ್ಲಂಬರ್|ಪ್ಲಂಬಿಂಗ್|ಕಾರ್ಪೆಂಟರ್|ಮೆಕ್ಯಾನಿಕ್|ಪೇಂಟರ್|ನಾಳೆ|ಇಂದು|ನನ್ನ ಬುಕಿಂಗ್|ಹುಡುಕಿ|ಬೇಕು|ಬೇಕಾಗಿತ್ತು)/u.test(text)
             || /(?:बुक|बुकिंग|कामगार|विशेषज्ञ|इलेक्ट्रिशियन|प्लंबर|बढ़ई|मैकेनिक|पेंटर|कल|आज|मेरी बुकिंग|ढूँढ)/u.test(text)
         );
         if (customerTransactionTurn && !spokenResponse) {
@@ -3687,7 +3775,7 @@ class ContextAwareVoiceAgent {
                     // Never let a successful-but-wrong-language Gemini turn
                     // leak into the call. The deterministic local engine will
                     // provide the selected-language prompt instead.
-                    if (!expectedScript || expectedScript.test(geminiTurn.spokenResponse)) {
+                    if (!expectedScript || expectedScript.test(geminiTurn.spokenResponse) || process.env.TRANSLATION_SERVICE_URL) {
                         spokenResponse = geminiTurn.spokenResponse;
                         toolExecuted = geminiTurn.toolExecuted || null;
                         toolResult = geminiTurn.toolResult || null;
@@ -3723,6 +3811,7 @@ class ContextAwareVoiceAgent {
         spokenResponse = session.callerRole === 'worker'
             ? localizeWorkerFallback(spokenResponse, session.language)
             : localizeCustomerFallback(spokenResponse, session.language);
+        spokenResponse = await translateResponseIfRequired(spokenResponse, session.language);
 
         // Add assistant turn to session memory
         sessionManager.addTurn(session, 'assistant', spokenResponse);

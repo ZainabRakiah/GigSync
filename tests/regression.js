@@ -586,6 +586,104 @@ await test('Phase 0.5-D — Customer Chatbot refuses a named worker already book
     assert.ok(!result.spokenResponse.toLowerCase().includes('confirmed'), 'Must not falsely confirm a clash');
 });
 
+await test('Phase 0.5-D — Kannada customer booking preserves spoken explicit September date', async () => {
+    const { aiAgent } = require('../backend/ai_agent');
+    const plumber = DB.registerWorkerProfile({
+        name: 'Chiyyu Kannada Plumber',
+        phone: '9876507787',
+        trade: 'Plumber',
+        city: 'Kanakapura'
+    }).worker || DB.getWorkerByPhone('9876507787');
+    assert.ok(plumber && plumber.id);
+
+    DB.setWorkerAvailabilitySlot({
+        workerId: plumber.id,
+        workerPhone: plumber.phone,
+        trade: plumber.trade,
+        dateStr: '2026-09-03',
+        startTime: '09:00 AM',
+        endTime: '02:30 PM',
+        isAvailable: true
+    });
+
+    const result = await aiAgent.processCallTurn({
+        sessionId: 'cust_session_kn_explicit_date_1',
+        callerPhone: '9900112234',
+        callerRole: 'customer',
+        callerName: 'Sunita',
+        city: 'Kanakapura',
+        language: 'KN',
+        speechText: 'ಥರ್ಡ್ ಸೆಪ್ಟೆಂಬರ್ ಗೆ ನೈನ್ ಯಿಂದ 2:30ಗೆ ಪ್ಲಂಬರ್ ಬೇಕು'
+    });
+
+    assert.ok(result.spokenResponse, 'Must return a spoken response');
+    assert.ok(result.spokenResponse.toLowerCase().includes('3rd september'), 'Must mention the explicit spoken date');
+    assert.ok(!result.spokenResponse.toLowerCase().includes('tomorrow'), 'Must not reuse Tomorrow for an explicit Kannada date');
+});
+
+await test('Phase 0.5-D — Kannada confirmed booking prevents overlapping rebooking', async () => {
+    const { aiAgent } = require('../backend/ai_agent');
+    const plumber = DB.registerWorkerProfile({
+        name: 'Overlap Kannada Plumber',
+        phone: '9876507778',
+        trade: 'Plumber',
+        city: 'Kanakapura'
+    }).worker || DB.getWorkerByPhone('9876507778');
+    assert.ok(plumber && plumber.id);
+
+    DB.setWorkerAvailabilitySlot({
+        workerId: plumber.id,
+        workerPhone: plumber.phone,
+        trade: plumber.trade,
+        dateStr: 'Tomorrow',
+        startTime: '09:00 AM',
+        endTime: '05:00 PM',
+        isAvailable: true
+    });
+
+    const first = await aiAgent.processCallTurn({
+        sessionId: 'cust_session_kn_overlap_1',
+        callerPhone: '9900112235',
+        callerRole: 'customer',
+        callerName: 'Sunita',
+        city: 'Kanakapura',
+        language: 'KN',
+        speechText: 'ನಾಳೆ ಪ್ಲಂಬರ್ 10-12 ಬೇಕು'
+    });
+    assert.ok(first.spokenResponse.toLowerCase().includes('overlap kannada ಪ್ಲಂಬರ್'), 'Must offer the available plumber before confirmation');
+
+    const confirmed = await aiAgent.processCallTurn({
+        sessionId: 'cust_session_kn_overlap_1',
+        callerPhone: '9900112235',
+        callerRole: 'customer',
+        callerName: 'Sunita',
+        city: 'Kanakapura',
+        language: 'KN',
+        speechText: 'ಹೌದು ಬುಕ್ ಮಾಡಿ'
+    });
+    assert.ok(confirmed.spokenResponse, 'Must respond to confirmation');
+    assert.ok(!confirmed.spokenResponse.toLowerCase().includes('dispatched'), 'A listed single worker should be booked directly, not broadcast');
+
+    const second = await aiAgent.processCallTurn({
+        sessionId: 'cust_session_kn_overlap_2',
+        callerPhone: '9900112236',
+        callerRole: 'customer',
+        callerName: 'Sunita',
+        city: 'Kanakapura',
+        language: 'KN',
+        speechText: 'ನಾಳೆ ಪ್ಲಂಬರ್ 10-12 ಬೇಕು'
+    });
+
+    assert.ok(second.spokenResponse, 'Must respond to overlapping request');
+    assert.ok(!second.spokenResponse.toLowerCase().includes('overlap kannada ಪ್ಲಂಬರ್'), 'Busy plumber must not be listed again for the same slot');
+    assert.ok(
+        second.detectedIntent === 'find_workers_empty'
+        || second.spokenResponse.includes('ಲಭ್ಯವಿಲ್ಲ')
+        || second.spokenResponse.toLowerCase().includes('no verified'),
+        'Must clearly say nobody is available for the overlapping slot'
+    );
+});
+
 await test('Phase 0.5-D — Worker Voice Agent answers profession, bookings, and availability', async () => {
     const { aiAgent } = require('../backend/ai_agent');
     

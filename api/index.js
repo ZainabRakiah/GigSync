@@ -751,7 +751,7 @@ module.exports = async (req, res) => {
                 city: identity.city,
                 isVoiceCall: isVoice,
                 portal: body.portal,
-                language: /^(EN|KN|HN)$/i.test(body.language || '') ? String(body.language).toUpperCase() : 'EN',
+                language: /^(EN|KN|HN|HI)$/i.test(body.language || '') ? (String(body.language).toUpperCase() === 'HI' ? 'HN' : String(body.language).toUpperCase()) : 'EN',
                 speechText
             });
 

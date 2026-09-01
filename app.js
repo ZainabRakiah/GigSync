@@ -10,7 +10,7 @@ token: localStorage.getItem('gigsync_token') || null,
 user: null,
 city: localStorage.getItem('gigsync_city') || 'Ramanagara',
 portal: 'gateway', // 'gateway' | 'customer' | 'worker' | 'terminal'
-language: (/^(EN|KN|HN)$/.test((localStorage.getItem('gigsync_language') || '').toUpperCase()) ? (localStorage.getItem('gigsync_language') || 'EN').toUpperCase() : 'EN'),
+language: (() => { const saved = (localStorage.getItem('gigsync_language') || '').toUpperCase(); return saved === 'HI' ? 'HN' : (/^(EN|KN|HN)$/.test(saved) ? saved : 'EN'); })(),
 customerView: 'home', // 'home' | 'bookings'
 workerView: 'home', // 'home' | 'bookings' | 'earnings'
 workers: [],
@@ -26,15 +26,16 @@ terminalLogs: []
 const LANGUAGE_CONFIG = {
     EN: { speech: 'en-IN', tts: 'en', label: 'EN' },
     KN: { speech: 'kn-IN', tts: 'kn', label: 'KN' },
-    HN: { speech: 'hi-IN', tts: 'hi', label: 'HN' }
+    HN: { speech: 'hi-IN', tts: 'hi', label: 'HI' }
 };
 function getLanguageConfig() { return LANGUAGE_CONFIG[state.language] || LANGUAGE_CONFIG.EN; }
 function setAppLanguage(lang) {
     const normalized = String(lang || 'EN').toUpperCase();
-    if (!LANGUAGE_CONFIG[normalized]) return;
-    state.language = normalized;
-    localStorage.setItem('gigsync_language', normalized);
-    document.documentElement.lang = normalized === 'KN' ? 'kn' : normalized === 'HN' ? 'hi' : 'en';
+    const internalLanguage = normalized === 'HI' ? 'HN' : normalized;
+    if (!LANGUAGE_CONFIG[internalLanguage]) return;
+    state.language = internalLanguage;
+    localStorage.setItem('gigsync_language', internalLanguage === 'HN' ? 'HI' : internalLanguage);
+    document.documentElement.lang = internalLanguage === 'KN' ? 'kn' : internalLanguage === 'HN' ? 'hi' : 'en';
     document.querySelectorAll('[data-gigsync-language]').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.gigsyncLanguage === normalized);
     });
@@ -46,7 +47,7 @@ function setAppLanguage(lang) {
 }
 function updateLanguageControls() {
     document.querySelectorAll('[data-gigsync-language]').forEach(btn => {
-        btn.classList.toggle('active', btn.dataset.gigsyncLanguage === state.language);
+        btn.classList.toggle('active', btn.dataset.gigsyncLanguage === getLanguageConfig().label);
     });
 }
 const UI_TRANSLATIONS = {
@@ -124,7 +125,7 @@ function installLanguageSwitcher() {
         document.body.appendChild(wrap);
     }
     if (!wrap.dataset.bound) {
-        ['EN','KN','HN'].forEach(code => {
+    ['EN','KN','HI'].forEach(code => {
             if (wrap.querySelector(`[data-gigsync-language="${code}"]`)) return;
             const btn = document.createElement('button');
             btn.type = 'button';
